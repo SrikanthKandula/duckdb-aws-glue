@@ -111,9 +111,9 @@ optional_ptr<CatalogEntry> GlueCatalog::CreateSchema(CatalogTransaction transact
 		}
 	}
 
-	GlueDatabaseInfo database;
-	database.name = schema_name;
-	database.location_uri = GetDatabaseLocation(schema_name);
+	// DuckDB's CREATE SCHEMA grammar carries no options (CreateSchemaStmt <- 'SCHEMA' IfNotExists? QualifiedName), so
+	// there is nothing to apply here; glue_create_database() is the surface that passes them
+	auto database = BuildDatabaseInfo(schema_name, {}, "CREATE SCHEMA");
 	GlueAPI::CreateDatabase(context, *this, database);
 
 	// re-fetch so the cached entry reflects what Glue stored
@@ -155,6 +155,34 @@ string GlueCatalog::GetDatabaseLocation(const string &database_name) const {
 		return string();
 	}
 	return options.default_location + "/" + database_name;
+}
+
+GlueDatabaseInfo GlueCatalog::BuildDatabaseInfo(const string &database_name,
+                                                const case_insensitive_map_t<string> &options_list,
+                                                const string &context_name) const {
+	GlueDatabaseInfo database;
+	database.name = database_name;
+	database.location_uri = GetDatabaseLocation(database_name);
+	for (auto &option : options_list) {
+		auto &key = option.first;
+		if (StringUtil::CIEquals(key, "comment")) {
+			database.description = option.second;
+		} else if (StringUtil::CIEquals(key, "location")) {
+			database.location_uri = option.second;
+			StringUtil::RTrim(database.location_uri, "/");
+		} else if (StringUtil::CIEquals(key, "type")) {
+			// symmetry with CREATE TABLE's 'type' option, which only accepts Hive
+			if (StringUtil::Upper(option.second) != "HIVE") {
+				throw BinderException("%s: unknown Glue database type '%s' for option 'type', only 'HIVE' is supported",
+				                      context_name, option.second);
+			}
+		} else {
+			// everything else is a database property, stored in Glue's database parameters, the way CREATE TABLE's
+			// unknown options become table parameters (Athena's DBPROPERTIES)
+			database.parameters[key] = option.second;
+		}
+	}
+	return database;
 }
 
 string GlueCatalog::GetTableLocation(const GlueDatabaseInfo &database, const string &table_name) const {
