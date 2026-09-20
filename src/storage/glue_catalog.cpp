@@ -134,7 +134,18 @@ void GlueCatalog::DropSchema(ClientContext &context, DropInfo &info) {
 		throw CatalogException("Schema with name \"%s\" does not exist in Glue catalog \"%s\"", schema_name,
 		                       GetName().GetIdentifierName());
 	}
-	// NOTE: Glue deletes every table in the database along with it, regardless of CASCADE
+	if (!info.cascade) {
+		// Glue's DeleteDatabase deletes every table of the database along with it and has no RESTRICT mode, so the
+		// check has to happen here, before the call. Ask Glue rather than the cached table set: nothing invalidates
+		// that cache during the life of the attach, so a stale "empty" answer would delete tables never seen here.
+		string first_table_name;
+		if (GlueAPI::DatabaseHasTables(context, *this, schema_name, &first_table_name)) {
+			throw CatalogException("Cannot drop Glue database \"%s\" because it still contains tables (e.g. \"%s\"). "
+			                       "Use DROP SCHEMA ... CASCADE to drop the database together with all of its tables",
+			                       schema_name, first_table_name);
+		}
+	}
+	// Glue deletes every table in the database along with it, which is the CASCADE behaviour
 	GlueAPI::DeleteDatabase(context, *this, schema_name);
 	schemas.RemoveEntry(schema_name);
 }
