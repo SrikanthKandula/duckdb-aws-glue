@@ -1,6 +1,7 @@
 # name: test/sql/hive/dml/insert/insert_partition_value_fidelity.test
 # description: What INSERT registers in Glue must be the partition's real value, and two values that differ only in
 # group: [insert]
+
 #              case must be two partitions. Both used to go wrong because Finalize rebuilt catalog state out of the
 #              written S3 path rather than out of the values it already had:
 #                - the directory dedup compared paths case-INsensitively, so country=US and country=us (two real

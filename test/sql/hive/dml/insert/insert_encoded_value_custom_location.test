@@ -1,6 +1,7 @@
 # name: test/sql/hive/dml/insert/insert_encoded_value_custom_location.test
 # description: A partition whose Glue value is percent-encoded AND whose location is custom. This composition is
 # group: [insert]
+
 #              the case neither of the two individual fixes covers on its own, so it gets a file of its own.
 #
 # Writing into a custom-located partition works by matching the values Glue reports against the values in the data.

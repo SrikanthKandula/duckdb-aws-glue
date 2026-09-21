@@ -1,6 +1,7 @@
 # name: test/sql/hive/dml/insert/insert_refused_layouts.test
 # description: Two partition layouts Glue permits cannot be written by DuckDB, so INSERT refuses them up front:
 # group: [insert]
+
 #              a partition nested inside another partition's location, and a partition outside the table location.
 #
 # This is deliberately stricter than Glue. Glue puts no constraint on partition locations, but DuckDB's partitioned

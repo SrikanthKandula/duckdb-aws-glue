@@ -1,6 +1,7 @@
 # name: test/sql/hive/dml/insert/insert_custom_location_partition.test
 # description: INSERT into a partition registered at a custom location must write into that location, not into the
 # group: [insert]
+
 #              default <table location>/<key>=<value>/ path. Before this was fixed the INSERT was accepted and the
 #              rows were written to the default path while the partition still pointed elsewhere, so they were
 #              orphaned in S3 and invisible to every reader -- an acknowledged write that silently did not persist.
