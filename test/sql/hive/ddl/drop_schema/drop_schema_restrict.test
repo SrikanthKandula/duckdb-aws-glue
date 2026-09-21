@@ -1,9 +1,10 @@
 # name: test/sql/hive/ddl/drop_schema/drop_schema_restrict.test
-# description: DROP SCHEMA without CASCADE must refuse a Glue database that still has tables. Glue's DeleteDatabase
-#              always deletes every table of the database, so the extension has to enforce RESTRICT itself, before
-#              the call. This is what DuckDB's own catalog does (duck_catalog.cpp: "the dependency manager blocks
-#              the drop (RESTRICT) or cascades"), and what Athena / Hive do.
+# description: DROP SCHEMA without CASCADE must refuse a Glue database that still has tables
 # group: [drop_schema]
+
+# Glue's DeleteDatabase always deletes every table of the database, so the extension has to enforce RESTRICT itself,
+# before the call. This is what DuckDB's own catalog does (duck_catalog.cpp: "the dependency manager blocks the drop
+# (RESTRICT) or cascades"), and what Athena / Hive do.
 
 require httpfs
 

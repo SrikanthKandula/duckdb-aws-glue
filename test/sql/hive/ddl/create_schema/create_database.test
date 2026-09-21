@@ -1,10 +1,11 @@
 # name: test/sql/hive/ddl/create_schema/create_database.test
-# description: glue_create_database() called directly as a table function, rather than through the CREATE SCHEMA ...
-#              WITH (...) sugar of the glue_hive_ddl grammar extension. Covers the option form the grammar never
-#              builds (a STRUCT, the grammar always builds a MAP), the 'created' return value, the 'type' option
-#              check, the schema cache refresh that keeps a new database visible to an attachment that has already
-#              listed, and the error surface of the name and the option list.
+# description: glue_create_database() called directly as a table function
 # group: [create_schema]
+
+# Rather than through the CREATE SCHEMA ... WITH (...) sugar of the glue_hive_ddl grammar extension. Covers the option
+# form the grammar never builds (a STRUCT, the grammar always builds a MAP), the 'created' return value, the 'type'
+# option check, the schema cache refresh that keeps a new database visible to an attachment that has already listed,
+# and the error surface of the name and the option list.
 
 require httpfs
 

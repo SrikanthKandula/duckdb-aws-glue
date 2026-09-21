@@ -1,9 +1,11 @@
 # name: test/sql/hive/ddl/create_schema/create_schema_options.test
-# description: CREATE SCHEMA ... WITH (...) for Glue databases: comment (Glue Description), location (LocationUri)
-#              and any other key as a Glue database parameter (Athena's DBPROPERTIES). DuckDB's own CREATE SCHEMA
-#              grammar takes nothing but a name, so the option list comes from the glue_hive_ddl grammar extension
-#              and desugars to glue_create_database(). The same option list DuckDB already accepts on CREATE TABLE.
+# description: CREATE SCHEMA ... WITH (...) for Glue databases
 # group: [create_schema]
+
+# comment becomes the Glue Description, location the LocationUri, and any other key a Glue database parameter
+# (Athena's DBPROPERTIES). DuckDB's own CREATE SCHEMA grammar takes nothing but a name, so the option list comes from
+# the glue_hive_ddl grammar extension and desugars to glue_create_database(). The same option list DuckDB already
+# accepts on CREATE TABLE.
 
 require httpfs
 

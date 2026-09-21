@@ -1,10 +1,11 @@
 # name: test/sql/hive/ddl/alter_schema/set_database_properties.test
-# description: glue_set_database_properties(), the counterpart of Hive / Athena's ALTER DATABASE ... SET DBPROPERTIES.
-#              It merges: the listed keys are added or overwritten, every unlisted key is kept, and the rest of the
-#              Glue database survives the UpdateDatabase round trip, the description and the location included --
-#              UpdateDatabase replaces the whole definition, so anything the caller does not resend would be wiped.
-#              'comment' is routed to the Glue Description instead of being stored as a property.
+# description: glue_set_database_properties(), the counterpart of Hive / Athena's ALTER DATABASE ... SET DBPROPERTIES
 # group: [alter_schema]
+
+# It merges: the listed keys are added or overwritten, every unlisted key is kept, and the rest of the Glue database
+# survives the UpdateDatabase round trip, the description and the location included -- UpdateDatabase replaces the
+# whole definition, so anything the caller does not resend would be wiped. 'comment' is routed to the Glue Description
+# instead of being stored as a property.
 
 require httpfs
 
