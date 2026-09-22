@@ -1,7 +1,7 @@
 # name: test/sql/hive/bugs/s3_cardinality_empty_and_custom_partitions.test
-# description: S3 - registering a partition that holds NO data raises the table's estimated cardinality by
+# description: S3 - registering a partition that holds NO data raises the table's estimated cardinality by 2,000 rows, and a partition at a custom location counts the same as any other.
 # group: [bugs]
-#              2,000 rows, and a partition at a custom location counts the same as any other.
+
 #
 # Follows from the law being a function of the partition COUNT: every registered partition contributes
 # 1000 x 2 whether it holds a billion rows, one row, or nothing at all. So MSCK-REPAIR-style registration,

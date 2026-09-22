@@ -1,7 +1,7 @@
 # name: test/sql/hive/bugs/s3_partition_statistics_case_differing_values.test
-# description: S3 guard - partition-column statistics must not fold case. Two values differing only in
+# description: S3 guard - partition-column statistics must not fold case. Two values differing only in case are two distinct values of a case-sensitive VARCHAR column.
 # group: [bugs]
-#              case are two distinct values of a case-sensitive VARCHAR column.
+
 #
 # REQUIRES PR #8. Before it this fixture could not even be built: Finalize's directory dedup compared
 # the written S3 path case-INsensitively, so country=US and country=us collapsed to one registered

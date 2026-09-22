@@ -1,6 +1,7 @@
 # name: test/sql/hive/bugs/s3_cardinality_unpartitioned.test
 # description: S3 - an UNPARTITIONED Glue table is estimated at a constant 2,000 rows whatever it holds.
 # group: [bugs]
+
 #
 # The sibling tests cover partitioned tables. This one exists because the defect is not specific to
 # partitioning, which an earlier framing of it assumed. One unpartitioned table is one root listing job,

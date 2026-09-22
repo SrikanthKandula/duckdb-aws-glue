@@ -1,7 +1,7 @@
 # name: test/sql/hive/bugs/s3_partition_value_valid_escape.test
-# description: G25 - a partition value that legitimately contains a VALID escape sequence must survive. The scan
+# description: G25 - a partition value that legitimately contains a VALID escape sequence must survive. The scan used to unescape it, so the value was corrupted and the row became unreachable by its real value.
 # group: [bugs]
-#              used to unescape it, so the value was corrupted and the row became unreachable by its real value.
+
 #
 # Glue's Partition.Values holds the RAW value; the escaping belongs to the <key>=<value> DIRECTORY name. That is the
 # distinction G23 established and fixed on the write side. The read side kept using HivePartitioning::GetValue, which

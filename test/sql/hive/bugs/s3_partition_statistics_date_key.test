@@ -1,7 +1,7 @@
 # name: test/sql/hive/bugs/s3_partition_statistics_date_key.test
-# description: S3 - partition-column statistics on a DATE key, the other shape real tables use, and the
+# description: S3 - partition-column statistics on a DATE key, the other shape real tables use, and the one where a range filter is the whole point.
 # group: [bugs]
-#              one where a range filter is the whole point.
+
 #
 # TPC-DS partitions by ss_sold_date_sk, an INTEGER (covered by the numeric sibling). Date-partitioned
 # tables written by Spark or Hive commonly use a DATE or a date-shaped string instead, and date RANGE

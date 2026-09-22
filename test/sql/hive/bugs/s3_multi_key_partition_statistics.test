@@ -1,7 +1,7 @@
 # name: test/sql/hive/bugs/s3_multi_key_partition_statistics.test
-# description: S3 - partition-column statistics with TWO partition keys: each key's statistics must
+# description: S3 - partition-column statistics with TWO partition keys: each key's statistics must describe that key, and neither may prune the other's rows.
 # group: [bugs]
-#              describe that key, and neither may prune the other's rows.
+
 #
 # Every other test in this set uses a single partition key. Two keys add the failure this cannot show: the
 # statistics for key i must be built from position i of each partition's value vector. An off-by-one gives

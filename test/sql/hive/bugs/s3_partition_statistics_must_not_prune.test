@@ -1,7 +1,7 @@
 # name: test/sql/hive/bugs/s3_partition_statistics_must_not_prune.test
-# description: S3 guard - partition-column statistics must never prune a row that exists. GREEN today,
+# description: S3 guard - partition-column statistics must never prune a row that exists. GREEN today, and the most important file in this set to keep green.
 # group: [bugs]
-#              and the most important file in this set to keep green.
+
 #
 # Today there are no partition-column statistics, so nothing prunes on them: queries are slower than they
 # need to be but they are CORRECT. Supplying min/max changes that. StatisticsPropagator uses column

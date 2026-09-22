@@ -1,7 +1,7 @@
 # name: test/sql/hive/bugs/s3_plan_time_cost_invariants.test
-# description: S3 guard - planning a Glue table samples ONE partition and no more, however many it has,
+# description: S3 guard - planning a Glue table samples ONE partition and no more, however many it has, and still asks Glue exactly once for the table and once for the partitions.
 # group: [bugs]
-#              and still asks Glue exactly once for the table and once for the partitions.
+
 #
 # Unlike its siblings this file asserts no defect. It pins the plan-time budget, and the number it pins
 # changed once: it used to require ZERO listings, which is what made the estimate a constant. Glue carries

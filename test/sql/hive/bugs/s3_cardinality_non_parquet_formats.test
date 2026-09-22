@@ -1,6 +1,7 @@
 # name: test/sql/hive/bugs/s3_cardinality_non_parquet_formats.test
 # description: S3 - a csv, json or avro Glue table is estimated at ONE row, whatever it holds.
 # group: [bugs]
+
 #
 # The parquet law (1000 x listing_jobs x 2, see the sibling tests) does not apply to the other three
 # formats the extension supports, and what they get instead is worse. read_csv / read_json / read_avro

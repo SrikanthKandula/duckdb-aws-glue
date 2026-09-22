@@ -1,7 +1,7 @@
 # name: test/sql/hive/bugs/s3_cardinality_ignores_data.test
-# description: S3 - the cardinality estimate for a partitioned Glue table is a function of the PARTITION COUNT
+# description: S3 - the cardinality estimate for a partitioned Glue table is a function of the PARTITION COUNT alone. It ignores the row count, the number of files per partition, and the rows per file.
 # group: [bugs]
-#              alone. It ignores the row count, the number of files per partition, and the rows per file.
+
 #
 # Measured law (2026-09-21), confirmed over actual row counts from 100 to 200,000:
 #

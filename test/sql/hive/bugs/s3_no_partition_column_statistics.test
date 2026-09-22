@@ -1,7 +1,7 @@
 # name: test/sql/hive/bugs/s3_no_partition_column_statistics.test
-# description: S3 - a partitioned Glue table exposes NO statistics for its partition columns, so the
+# description: S3 - a partitioned Glue table exposes NO statistics for its partition columns, so the optimizer cannot use values we already hold in memory.
 # group: [bugs]
-#              optimizer cannot use values we already hold in memory.
+
 #
 # DuckDB declines these columns twice over, both deliberately, in MultiFileScanStatsExtended:
 #   - :1084-1090 returns nullptr for any hive-partitioning column, because the statistics stored in the

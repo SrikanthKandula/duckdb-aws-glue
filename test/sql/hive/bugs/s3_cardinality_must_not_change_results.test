@@ -1,7 +1,7 @@
 # name: test/sql/hive/bugs/s3_cardinality_must_not_change_results.test
-# description: S3 guard - the cardinality estimate must never change an ANSWER. GREEN today, and the
+# description: S3 guard - the cardinality estimate must never change an ANSWER. GREEN today, and the counterpart of s3_partition_statistics_must_not_prune for the row-count half.
 # group: [bugs]
-#              counterpart of s3_partition_statistics_must_not_prune for the row-count half.
+
 #
 # NodeStatistics can carry two things: estimated_cardinality, a hint, and max_cardinality, which the
 # optimizer may treat as a GUARANTEE the scan cannot exceed. Any row count we get from Glue is stale by

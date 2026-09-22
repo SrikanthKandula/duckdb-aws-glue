@@ -1,7 +1,7 @@
 # name: test/sql/hive/bugs/s3_cardinality_pruning.test
-# description: S3 - partition pruning IS reflected in the estimate (green, and worth protecting), but the
+# description: S3 - partition pruning IS reflected in the estimate (green, and worth protecting), but the pruned estimate is still the same fabricated constant, now over fewer partitions.
 # group: [bugs]
-#              pruned estimate is still the same fabricated constant, now over fewer partitions.
+
 #
 # Two separate things, deliberately in one file because a fix could easily get one right and the other
 # wrong:

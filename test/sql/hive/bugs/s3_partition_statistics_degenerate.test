@@ -1,7 +1,7 @@
 # name: test/sql/hive/bugs/s3_partition_statistics_degenerate.test
-# description: S3 guard - the degenerate partition sets that partition-column statistics have to survive:
+# description: S3 guard - the degenerate partition sets that partition-column statistics have to survive: no partitions at all, exactly one, and a filter that prunes every one of them.
 # group: [bugs]
-#              no partitions at all, exactly one, and a filter that prunes every one of them.
+
 #
 # GREEN today, because with no statistics there is nothing to compute. Each of these is a plausible way to
 # crash or mis-answer an implementation that computes min/max and a distinct count over the pruned

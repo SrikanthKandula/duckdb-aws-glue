@@ -1,7 +1,7 @@
 # name: test/sql/hive/bugs/s3_partition_statistics_value_typing.test
-# description: S3 guard - partition-column statistics must use the column's DECLARED type, not a type
+# description: S3 guard - partition-column statistics must use the column's DECLARED type, not a type guessed from the values. GREEN today.
 # group: [bugs]
-#              guessed from the values. GREEN today.
+
 #
 # Glue stores every partition value as a string, so an implementation has to decide what type to compare
 # them as when building min/max. The tempting shortcut is to look at the values -- and for a VARCHAR

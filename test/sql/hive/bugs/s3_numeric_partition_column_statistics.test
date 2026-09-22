@@ -1,7 +1,7 @@
 # name: test/sql/hive/bugs/s3_numeric_partition_column_statistics.test
-# description: S3 - partition-column statistics are missing for a NUMERIC partition key too, which is the
+# description: S3 - partition-column statistics are missing for a NUMERIC partition key too, which is the shape real tables use: TPC-DS partitions store_sales by ss_sold_date_sk, an INTEGER.
 # group: [bugs]
-#              shape real tables use: TPC-DS partitions store_sales by ss_sold_date_sk, an INTEGER.
+
 #
 # The sibling partition-statistics test uses a VARCHAR key. This one exists because the numeric case goes
 # through a type conversion the string case does not: Glue stores every partition value as a STRING, so an

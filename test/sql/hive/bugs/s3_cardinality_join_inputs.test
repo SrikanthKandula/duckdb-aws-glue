@@ -1,7 +1,7 @@
 # name: test/sql/hive/bugs/s3_cardinality_join_inputs.test
-# description: S3 - a 100,000-row fact table and a 40-row dimension table are estimated IDENTICALLY, so a
+# description: S3 - a 100,000-row fact table and a 40-row dimension table are estimated IDENTICALLY, so a join between them is planned with no information about either side.
 # group: [bugs]
-#              join between them is planned with no information about either side.
+
 #
 # This is the consequence the other tests describe, made concrete, and it is the reason any of this
 # matters. Both tables have four partitions, so both estimate 1000 x 4 x 2 = 8,000: the fact table 12x
