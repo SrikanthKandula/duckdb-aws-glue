@@ -314,6 +314,13 @@ Aws::Vector<Aws::String> ToAwsValues(const vector<string> &values) {
 	return Aws::Vector<Aws::String>(values.begin(), values.end());
 }
 
+void CheckWritable(const GlueCatalog &catalog, const string &operation) {
+	if (catalog.access_mode == AccessMode::READ_ONLY) {
+		throw InvalidInputException("Cannot execute Glue %s on database %s which is attached in read-only mode!",
+		                            operation, catalog.GetName());
+	}
+}
+
 template <class REQUEST>
 void SetCatalogId(REQUEST &request, const GlueCatalog &catalog) {
 	if (!catalog.options.catalog_id.empty()) {
@@ -529,6 +536,7 @@ Aws::Vector<Aws::Glue::Model::Column> ToAwsColumns(const vector<GlueColumn> &inp
 } // namespace
 
 void GlueAPI::CreateDatabase(ClientContext &context, GlueCatalog &catalog, const GlueDatabaseInfo &database) {
+	CheckWritable(catalog, "CreateDatabase");
 	GlueHttpClientContextScope http_scope(context);
 	auto client = GetClient(context, catalog);
 	Aws::Glue::Model::DatabaseInput input;
@@ -555,6 +563,7 @@ void GlueAPI::CreateDatabase(ClientContext &context, GlueCatalog &catalog, const
 }
 
 void GlueAPI::DeleteDatabase(ClientContext &context, GlueCatalog &catalog, const string &database_name) {
+	CheckWritable(catalog, "DeleteDatabase");
 	GlueHttpClientContextScope http_scope(context);
 	auto client = GetClient(context, catalog);
 	Aws::Glue::Model::DeleteDatabaseRequest request;
@@ -570,6 +579,7 @@ void GlueAPI::DeleteDatabase(ClientContext &context, GlueCatalog &catalog, const
 }
 
 void GlueAPI::CreateHiveTable(ClientContext &context, GlueCatalog &catalog, const GlueTableInfo &table) {
+	CheckWritable(catalog, "CreateTable");
 	if (table.location.empty()) {
 		throw InvalidInputException("Can not create Hive table '%s.%s' without a location", table.database_name,
 		                            table.name);
@@ -726,6 +736,7 @@ static void UpdateGlueTable(const std::shared_ptr<Aws::Glue::GlueClient> &client
 
 void GlueAPI::UpdateTableColumns(ClientContext &context, GlueCatalog &catalog, const string &database_name,
                                  const string &table_name, const vector<GlueColumn> &columns) {
+	CheckWritable(catalog, "UpdateTable");
 	GlueHttpClientContextScope http_scope(context);
 	auto client = GetClient(context, catalog);
 	UpdateGlueTable(client, catalog, database_name, table_name, [&](Aws::Glue::Model::TableInput &table_input) {
@@ -737,6 +748,7 @@ void GlueAPI::UpdateTableColumns(ClientContext &context, GlueCatalog &catalog, c
 
 void GlueAPI::SetTableLocation(ClientContext &context, GlueCatalog &catalog, const string &database_name,
                                const string &table_name, const string &location) {
+	CheckWritable(catalog, "UpdateTable");
 	GlueHttpClientContextScope http_scope(context);
 	auto client = GetClient(context, catalog);
 	UpdateGlueTable(client, catalog, database_name, table_name, [&](Aws::Glue::Model::TableInput &table_input) {
@@ -748,6 +760,7 @@ void GlueAPI::SetTableLocation(ClientContext &context, GlueCatalog &catalog, con
 
 void GlueAPI::SetPartitionLocation(ClientContext &context, GlueCatalog &catalog, const string &database_name,
                                    const string &table_name, const vector<string> &values, const string &location) {
+	CheckWritable(catalog, "UpdatePartition");
 	GlueHttpClientContextScope http_scope(context);
 	auto client = GetClient(context, catalog);
 	Aws::Glue::Model::GetPartitionRequest get_request;
@@ -812,6 +825,7 @@ bool GlueAPI::GetPartition(ClientContext &context, GlueCatalog &catalog, const s
 
 bool GlueAPI::CreatePartition(ClientContext &context, GlueCatalog &catalog, const string &database_name,
                               const string &table_name, const GluePartitionInput &partition, bool if_not_exists) {
+	CheckWritable(catalog, "CreatePartition");
 	GlueHttpClientContextScope http_scope(context);
 	auto client = GetClient(context, catalog);
 
@@ -852,6 +866,7 @@ bool GlueAPI::CreatePartition(ClientContext &context, GlueCatalog &catalog, cons
 
 bool GlueAPI::DeletePartition(ClientContext &context, GlueCatalog &catalog, const string &database_name,
                               const string &table_name, const vector<string> &values) {
+	CheckWritable(catalog, "DeletePartition");
 	GlueHttpClientContextScope http_scope(context);
 	auto client = GetClient(context, catalog);
 	Aws::Glue::Model::DeletePartitionRequest request;
@@ -873,6 +888,7 @@ bool GlueAPI::DeletePartition(ClientContext &context, GlueCatalog &catalog, cons
 void GlueAPI::RenamePartition(ClientContext &context, GlueCatalog &catalog, const string &database_name,
                               const string &table_name, const vector<string> &values,
                               const vector<string> &new_values) {
+	CheckWritable(catalog, "UpdatePartition");
 	GlueHttpClientContextScope http_scope(context);
 	auto client = GetClient(context, catalog);
 
@@ -1051,6 +1067,7 @@ vector<GluePartitionInfo> GlueAPI::GetPartitions(ClientContext &context, GlueCat
 
 void GlueAPI::BatchCreatePartitions(ClientContext &context, GlueCatalog &catalog, const string &database_name,
                                     const string &table_name, const vector<GluePartitionInput> &partitions) {
+	CheckWritable(catalog, "BatchCreatePartition");
 	if (partitions.empty()) {
 		return;
 	}
@@ -1110,6 +1127,7 @@ void GlueAPI::BatchCreatePartitions(ClientContext &context, GlueCatalog &catalog
 
 void GlueAPI::DeleteTable(ClientContext &context, GlueCatalog &catalog, const string &database_name,
                           const string &table_name) {
+	CheckWritable(catalog, "DeleteTable");
 	GlueHttpClientContextScope http_scope(context);
 	auto client = GetClient(context, catalog);
 	Aws::Glue::Model::DeleteTableRequest request;
