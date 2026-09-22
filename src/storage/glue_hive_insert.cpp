@@ -42,21 +42,17 @@ namespace {
 struct GluePartitionDirectory {
 	//! The partition's directory relative to the table location
 	string directory;
-	//! Set when DuckDB's partitioned writer cannot express this partition's location. Raised only if the statement
-	//! actually writes into this partition -- another partition being unwritable must not stop a write that never
-	//! touches it, which is why this is carried per partition rather than refused for the whole table up front.
+	//! Set when DuckDB's partitioned writer cannot express this partition's location.
 	string refusal;
 };
 
-//! The registered directory of each partition, keyed by its values. Attached to the partition-path function as
-//! function info, so the lookup is a hash probe once per partition instead of an expression per partition.
+//! The registered directory of each partition, keyed by its values.
 struct GluePartitionDirectories : public ScalarFunctionInfo {
 	//! Partition values (VARCHAR, NUL-separated) to where that partition is written
 	unordered_map<string, GluePartitionDirectory> by_values;
 };
 
-//! Glue stores partition values as strings, so the key is the values rendered as VARCHAR. A NULL value is Hive's
-//! __HIVE_DEFAULT_PARTITION__, which is what Glue holds for it and what the default hive layout writes.
+//! Glue stores partition values as strings, so the key is the values rendered as VARCHAR.
 string PartitionValuesKey(const vector<string> &values) {
 	string key;
 	for (auto &value : values) {
@@ -67,55 +63,54 @@ string PartitionValuesKey(const vector<string> &values) {
 }
 
 string PartitionValueToString(const Value &value) {
-	if (value.IsNull()) {
-		return HivePartitioning::DEFAULT_PARTITION_NAME;
-	}
-	return value.DefaultCastAs(LogicalType::VARCHAR).GetValue<string>();
+	return value.IsNull() ? HivePartitioning::DEFAULT_PARTITION_NAME
+	                      : value.DefaultCastAs(LogicalType::VARCHAR).GetValue<string>();
 }
 
-//! glue_partition_directory(<default directory>, <partition values...>): the directory Glue records for this
-//! partition, relative to the table location, or the default directory when the partition is not registered yet.
-//!
-//! The default is an argument rather than a coalesce around the call for two reasons: PARTITION_PATH may never
-//! evaluate to NULL, and DuckDB's coalesce is an operator rather than a catalog function, so it cannot be bound by
-//! name from here. Evaluated once per partition by PhysicalCopyToFile.
+//! The directories that Glue records for different partition values, relative to the table location, or the default
+//! if the partition is not registered. Evaluated once per partition by PhysicalCopyToFile.
+//! Example, for PARTITIONED BY (dt, country), args=("dt=2020-01-01/country=IN", 2020-01-01, IN)
+//! The default is an argument rather than a coalesce around the call: DuckDB's coalesce is an operator, not a catalog
+//! function, so it cannot be bound by name from here.
 void GluePartitionDirectoryFunction(DataChunk &args, ExpressionState &state, Vector &result) {
 	auto &func_expr = state.expr.Cast<BoundFunctionExpression>();
 	auto &directories = func_expr.Function().GetExtraFunctionInfo().Cast<GluePartitionDirectories>();
 	auto count = args.size();
 	auto writer = FlatVector::Writer<string_t>(result, count);
 	for (idx_t row = 0; row < count; row++) {
+		// look up known directory given partition values
 		vector<string> values;
 		for (idx_t col = 1; col < args.ColumnCount(); col++) {
 			values.push_back(PartitionValueToString(args.GetValue(col, row)));
 		}
 		auto entry = directories.by_values.find(PartitionValuesKey(values));
+
+		// unregistered, pick args[0] unless when it is null
 		if (entry == directories.by_values.end()) {
-			// not registered: the default hive layout, passed in as the first argument
-			writer.WriteValue(StringVector::AddString(result, PartitionValueToString(args.GetValue(0, row))));
+			auto default_dir = args.GetValue(0, row);
+			if (default_dir.IsNull()) {
+				writer.WriteNull();
+			} else {
+				writer.WriteValue(StringVector::AddString(result, StringValue::Get(default_dir)));
+			}
 			continue;
 		}
 		if (!entry->second.refusal.empty()) {
-			// this partition's location is one DuckDB's writer cannot express; only now, when it is actually
-			// written to, is that fatal
+			// this partition's registered location is known to not be expressible
+			// we deferred throwing an exception until we actually have to write
 			throw NotImplementedException(entry->second.refusal);
 		}
 		writer.WriteValue(StringVector::AddString(result, entry->second.directory));
 	}
 }
 
-//! Classify each registered partition: the directory to write it to, or why DuckDB's partitioned writer cannot
-//! express its location. Two layouts Glue allows are not writable, and both are recorded per partition rather than
-//! refused for the table, so that an INSERT which never touches the offending partition still works -- moving a
-//! table's location with ALTER TABLE ... SET LOCATION leaves older partitions outside it, and writing to a new
-//! partition of such a table has to keep working.
+//! Classify each registered partition: the directory to write it to, or why DuckDB's partitioned writer will not
+//! write to that location which happens due to two reasons:
+//!  1/ outside the table location: PhysicalCopyToFile writes every partition directory relative to the COPY target.
+//!  2/ nested inside, or equal to, another partition's location: a write cannot tell which of the two overlapping
+//!     partitions a new directory belongs to. Reads can, resolving a file to the deepest registered location.
 //!
-//!  - outside the table location: PhysicalCopyToFile writes every partition directory relative to the COPY target,
-//!    and letting a write escape it would also put files outside what OVERWRITE and the copy's failure cleanup touch.
-//!  - nested inside, or equal to, another partition's location: deepest-registration-wins resolves a file that
-//!    already exists, but cannot tell a writer which of two overlapping partitions a new directory belongs to.
-//!
-//! Being stricter than Glue here is deliberate. Reads of both layouts are unaffected.
+//! We are deliberately stricter than Glue on writes. Reads of both layouts are unaffected.
 void ClassifyPartitions(const GlueTableInfo &table_info, const string &location,
                         const vector<GluePartitionInfo> &partitions, GluePartitionDirectories &directories,
                         unordered_set<string> &registered_locations) {
@@ -132,17 +127,11 @@ void ClassifyPartitions(const GlueTableInfo &table_info, const string &location,
 			continue;
 		}
 		registered_locations.insert(partition_location);
-		vector<string> values;
-		for (auto &value : partition.values) {
-			values.push_back(value);
-		}
-		auto key = PartitionValuesKey(values);
+		auto key = PartitionValuesKey(partition.values);
 		// A catalog written before the values were stored unescaped holds the escaped form ('a%20b') where the data
-		// says 'a b', and the write matches on the values Glue reports. Registering the value unescaped stops new
-		// catalogs looking like that but repairs none of the existing ones, and one such partition is enough to send
-		// a write to the wrong place -- so index the unescaped form as well and accept either.
+		// says 'a b', and the write matches on the values Glue reports-- so index and accept either.
 		vector<string> unescaped_values;
-		for (auto &value : values) {
+		for (auto &value : partition.values) {
 			unescaped_values.push_back(HivePartitioning::Unescape(value));
 		}
 		auto unescaped_key = PartitionValuesKey(unescaped_values);
@@ -155,8 +144,7 @@ void ClassifyPartitions(const GlueTableInfo &table_info, const string &location,
 		} else if (!StringUtil::StartsWith(partition_location, location + "/")) {
 			entry.refusal = StringUtil::Format(
 			    "Cannot write to partition %s of Hive table '%s.%s': it is registered at \"%s\", which is outside "
-			    "the table location \"%s\". Glue allows that, but a write cannot place files outside the table "
-			    "location. Reading the table is unaffected; write to the partition's location directly, or repoint "
+			    "the table location \"%s\". Glue allows that, but Duck will not. Please repoint "
 			    "the partition below the table location with ALTER TABLE ... PARTITION ... SET LOCATION",
 			    describe(partition), table_info.database_name, table_info.name, partition_location, location);
 		} else {
@@ -172,16 +160,29 @@ void ClassifyPartitions(const GlueTableInfo &table_info, const string &location,
 		}
 		directories.by_values[key] = std::move(entry);
 	}
-	// no two partitions may share a directory, and none may sit inside another's. Sorting puts a directory
-	// immediately before anything nested in it, so adjacent pairs are enough.
+	// no two partitions may share a directory, and none may sit inside another's. Sorted, a directory is preceded by
+	// every one of its ancestors ("d" < "d/x", being a prefix and shorter), so a stack of the ancestors still open at
+	// this point finds every overlap. Comparing only adjacent pairs would miss the second of two directories nested in
+	// the same ancestor, e.g. d, d/x/1, d/x/2.
 	std::sort(relative_keys.begin(), relative_keys.end());
-	for (idx_t i = 1; i < relative_keys.size(); i++) {
-		auto &previous = relative_keys[i - 1];
+	vector<idx_t> open_ancestors;
+	for (idx_t i = 0; i < relative_keys.size(); i++) {
 		auto &current = relative_keys[i];
-		bool shared = current.first == previous.first;
-		if (!shared && !StringUtil::StartsWith(current.first, previous.first + "/")) {
+		// drop the ancestors this directory is not inside of; an equal directory stays, so a later descendant of it is
+		// still seen
+		while (!open_ancestors.empty()) {
+			auto &candidate = relative_keys[open_ancestors.back()].first;
+			if (candidate == current.first || StringUtil::StartsWith(current.first, candidate + "/")) {
+				break;
+			}
+			open_ancestors.pop_back();
+		}
+		open_ancestors.push_back(i);
+		if (open_ancestors.size() < 2) {
 			continue;
 		}
+		auto &previous = relative_keys[open_ancestors[open_ancestors.size() - 2]];
+		bool shared = current.first == previous.first;
 		auto refusal =
 		    shared
 		        ? StringUtil::Format("Cannot write to Hive table '%s.%s': two of its partitions are both registered at "
@@ -193,7 +194,7 @@ void ClassifyPartitions(const GlueTableInfo &table_info, const string &location,
 		                             "resolves a file to the deepest registered location, but a write cannot tell "
 		                             "which of the two a new directory belongs to. Reading the table is unaffected",
 		                             table_info.database_name, table_info.name, current.first, previous.first);
-		// both sides of the overlap are unwritable, either one being written is ambiguous
+		// both sides of the overlap are unwritable, at least one is ambiguous
 		for (auto &key : previous.second) {
 			directories.by_values[key].refusal = refusal;
 		}
@@ -204,15 +205,7 @@ void ClassifyPartitions(const GlueTableInfo &table_info, const string &location,
 }
 
 //! Build the PARTITION_PATH expression: the location Glue records for a partition, falling back to the default hive
-//! layout for a partition that is not registered yet.
-//!
-//! Glue is the source of truth for where a partition lives, and before this the write ignored it entirely: every
-//! partition was written to <table location>/<key>=<value>/, so rows inserted into a partition registered elsewhere
-//! landed at a path nothing pointed at and became unreadable.
-//!
-//! The fallback is built from DuckDB's own hive_partition_component / path_join -- the same functions
-//! PhysicalCopyToFile uses when it builds the layout itself -- so an unregistered partition is written to a
-//! byte-identical path, escaping included, rather than to one this extension re-derived.
+//! layout for a partition that is not registered yet. The default is built from DuckDB's own hive_partition_component.
 unique_ptr<Expression> BuildPartitionPath(ClientContext &context, const GlueTableInfo &table_info,
                                           const string &location, const vector<Identifier> &copy_names,
                                           const vector<LogicalType> &copy_types, const vector<idx_t> &partition_columns,
@@ -221,14 +214,11 @@ unique_ptr<Expression> BuildPartitionPath(ClientContext &context, const GlueTabl
 	auto directories = make_shared_ptr<GluePartitionDirectories>();
 	ClassifyPartitions(table_info, location, partitions, *directories, registered_locations);
 	if (directories->by_values.empty()) {
-		// nothing registered yet, so every partition takes the default layout: leave the copy on hive_file_pattern
+		// nothing registered yet, so every partition takes the default layout
 		return nullptr;
 	}
 
 	FunctionBinder function_binder(context);
-	// The default hive layout, built exactly the way PhysicalCopyToFile builds it for itself (CreateHivePartitionPath),
-	// so a partition that is not registered yet lands on a byte-identical path -- escaping included -- rather than on
-	// one this extension re-derived.
 	auto component_function = HivePartitionComponentFun::GetFunction();
 	vector<unique_ptr<Expression>> components;
 	for (idx_t i = 0; i < partition_columns.size(); i++) {
@@ -368,9 +358,7 @@ PhysicalOperator &GlueHiveInsert::PlanWrite(ClientContext &context, PhysicalPlan
 		break;
 	}
 	}
-	// Where the partitions of this table actually live. Glue records a location per partition and puts no constraint
-	// on it, so this has to be asked for rather than assumed: writing to the default <key>=<value> path when the
-	// partition points elsewhere loses the rows silently.
+	// Where the partitions of this table actually live. Read from Glue.
 	GlueHiveWriteInfo write_info;
 	write_info.table_info = table_info;
 	unique_ptr<Expression> partition_path;
@@ -410,8 +398,7 @@ PhysicalOperator &GlueHiveInsert::PlanWrite(ClientContext &context, PhysicalPlan
 		copy.partition_columns = partition_columns;
 		copy.write_partition_columns = false;
 		// a partition registered in Glue is written to the location Glue records; everything else takes the default
-		// hive layout, which the expression falls back to (and which hive_file_pattern gives when there is nothing
-		// registered at all)
+		// hive layout
 		copy.hive_file_pattern = true;
 		copy.partition_path_expression = std::move(partition_path);
 		copy.filename_pattern.SetFilenamePattern("duckdb_" + write_id + "_{i}");
@@ -519,23 +506,19 @@ SinkResultType GlueHiveInsert::Sink(ExecutionContext &context, DataChunk &chunk,
 SinkFinalizeType GlueHiveInsert::Finalize(Pipeline &pipeline, Event &event, ClientContext &context,
                                           OperatorSinkFinalizeInput &input) const {
 	auto &state = input.global_state.Cast<GlueHiveInsertGlobalState>();
-	// The table as of plan time, not GlueTable::table_info: PlanWrite deliberately refreshed it because the location
-	// or the partition keys may have changed since the catalog entry was built, and registering against a stale
-	// definition would write partitions under the wrong location or with the wrong key order
+	// The table as of plan time because the location or the partition keys may have changed since the catalog
+	// entry was built.
 	auto &table_info = write_info.table_info.name.empty() ? table.table_info : write_info.table_info;
 	if (discard || table_info.partition_keys.empty() || state.written_files.empty()) {
 		return SinkFinalizeType::READY;
 	}
 
 	// Register the partition directories the files were written to. New partitions took the default hive layout, so
-	// their directory names are <key>=<value> in partition key order and the values can be read back out of the path.
-	// Files written into an already-registered location are skipped: that partition exists, and its directory is not
-	// a <key>=<value> path, so parsing it would fail (which is what used to make redirected writes impossible).
+	// their directory names are <key>=<value> in partition key order. Files written into an already-registered
+	// location are skipped.
 	auto location = table_info.location;
 	StringUtil::RTrim(location, "/");
-	// Keyed case-sensitively, because the key is an S3 path and S3 is case-sensitive: country=US and country=us are
-	// two real directories that both receive files, and folding them together registered only the first, leaving the
-	// other one's rows written but invisible
+	// note: we use string here because the key is an S3 path and S3 is case-sensitive
 	unordered_map<string, GluePartitionInput> partitions;
 	for (auto &file : state.written_files) {
 		auto directory = file.substr(0, file.find_last_of('/'));
@@ -553,9 +536,7 @@ SinkFinalizeType GlueHiveInsert::Finalize(Pipeline &pipeline, Event &event, Clie
 			if (value == parsed.end()) {
 				throw InternalException("Written file '%s' has no value for partition key '%s'", file, key.name);
 			}
-			// Parse is a path parser and deliberately does not unescape, so its result is the escaped path component
-			// ('a%20b'), not the value. Glue must hold the value, the way every other engine stores it -- the
-			// escaping belongs to the directory name alone
+			// Parse is a path parser and deliberately does not unescape
 			partition.values.push_back(HivePartitioning::Unescape(value->second));
 		}
 		partitions.emplace(directory, std::move(partition));

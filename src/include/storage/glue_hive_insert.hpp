@@ -10,21 +10,17 @@
 namespace duckdb {
 class GlueTable;
 
-//! What the plan learned about where this table's partitions live, handed to the operator so Finalize does not have
-//! to re-derive it from the written paths (and does not have to trust the cached table_info).
+//! What the plan learned about where this table's partitions live
 struct GlueHiveWriteInfo {
-	//! The table as Glue had it at plan time. Finalize must not use GlueTable::table_info, which may be older: the
-	//! location or the partition keys can have changed since the catalog entry was built.
+	//! The table as Glue had it at plan time.
 	GlueTableInfo table_info;
-	//! The locations of the partitions already registered in Glue, trailing '/' trimmed. A file written into one of
-	//! these belongs to a partition that already exists, so it must not be registered again -- and its directory is
-	//! not a <key>=<value> path, so the partition values cannot be parsed back out of it.
+	//! The locations of the partitions already registered in Glue, trailing '/' trimmed.
 	unordered_set<string> registered_locations;
 };
 
 //! Writes rows into a Hive table registered in Glue: a COPY into the table location (by default one <key=value>
-//! directory level per partition key, but a partition registered at another location is written there), then the
-//! new partition directories are registered in Glue.
+//! directory level per partition key, but can be registered at different locations too), then the new
+//! partition directories are registered in Glue.
 class GlueHiveInsert : public PhysicalOperator {
 public:
 	GlueHiveInsert(PhysicalPlan &physical_plan, LogicalOperator &op, GlueTable &table, bool discard,

@@ -117,6 +117,13 @@ INSERT INTO my_datalake.default.ins_nested VALUES (1, 'inner');
 ----
 nested inside
 
+# the refusal names the table, both directories, and ends where it should. Matching only "nested inside" let a
+# format-argument bug through once: every substitution was shifted by one and the sentence was cut off mid-word.
+statement error
+INSERT INTO my_datalake.default.ins_nested VALUES (1, 'inner');
+----
+<REGEX>:.*Hive table 'default\.ins_nested'.*"outer/inner" is nested inside the location "outer".*a new directory belongs to\. Reading the table is unaffected.*
+
 # either side of the overlap is ambiguous, so writing the OUTER one is refused too
 statement error
 INSERT INTO my_datalake.default.ins_nested VALUES (1, 'outer');
@@ -156,8 +163,64 @@ SELECT id, dt FROM my_datalake.default.ins_nested WHERE dt = 'outer';
 ----
 1	outer
 
+# ---------------------------------------------------------------------------
+# claim: every partition of an overlap is refused, not just the first two found. Three partitions where one
+# contains the other two sort as anc, anc/x/1, anc/x/2 -- so comparing only adjacent pairs flags anc and
+# anc/x/1 and leaves anc/x/2 writable, which is the same layout reached through a different partition.
+# ---------------------------------------------------------------------------
+statement ok
+DROP TABLE IF EXISTS my_datalake.default.ins_nested3;
+
+statement ok
+CREATE TABLE my_datalake.default.ins_nested3 (id INTEGER, dt VARCHAR) PARTITIONED BY (dt);
+
+statement ok
+CALL glue_add_partition('my_datalake.default.ins_nested3', {dt: 'anc'},
+    location := '{DEFAULT_S3_LOCATION}/{TEST_DIR}/default/ins_nested3/anc');
+
+statement ok
+CALL glue_add_partition('my_datalake.default.ins_nested3', {dt: 'first'},
+    location := '{DEFAULT_S3_LOCATION}/{TEST_DIR}/default/ins_nested3/anc/x/1');
+
+statement ok
+CALL glue_add_partition('my_datalake.default.ins_nested3', {dt: 'second'},
+    location := '{DEFAULT_S3_LOCATION}/{TEST_DIR}/default/ins_nested3/anc/x/2');
+
+statement error
+INSERT INTO my_datalake.default.ins_nested3 VALUES (1, 'anc');
+----
+nested inside
+
+statement error
+INSERT INTO my_datalake.default.ins_nested3 VALUES (1, 'first');
+----
+nested inside
+
+# the one an adjacent-pair scan misses: its ancestor is not the directory immediately before it
+statement error
+INSERT INTO my_datalake.default.ins_nested3 VALUES (1, 'second');
+----
+nested inside
+
+query I
+SELECT count(*) FROM glob('{DEFAULT_S3_LOCATION}/{TEST_DIR}/default/ins_nested3/**/*.parquet');
+----
+0
+
+# a partition outside the overlap is still writable
+statement ok
+INSERT INTO my_datalake.default.ins_nested3 VALUES (2, 'sibling');
+
+query I
+SELECT count(*) FROM my_datalake.default.ins_nested3 WHERE dt = 'sibling';
+----
+1
+
 statement ok
 DROP TABLE my_datalake.default.ins_outside;
 
 statement ok
 DROP TABLE my_datalake.default.ins_nested;
+
+statement ok
+DROP TABLE my_datalake.default.ins_nested3;
