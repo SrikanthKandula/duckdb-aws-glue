@@ -1,23 +1,6 @@
 # name: test/sql/hive/bugs/s3_partition_statistics_case_differing_values.test
-# description: S3 guard - partition-column statistics must not fold case. Two values differing only in case are two distinct values of a case-sensitive VARCHAR column.
+# description: partition-column statistics must not fold case.
 # group: [bugs]
-
-#
-# REQUIRES PR #8. Before it this fixture could not even be built: Finalize's directory dedup compared
-# the written S3 path case-INsensitively, so country=US and country=us collapsed to one registered
-# partition and the second insert's rows were written to S3 and then orphaned. The row counts below
-# would have been 1, not 2. See insert_partition_value_fidelity.test for that half.
-#
-# Why this file sits with the statistics work rather than with #8: #8's bug was a case-INsensitive map
-# keyed on a case-SENSITIVE S3 path. Building min/max over partition values is the next place to make
-# exactly that mistake one layer up -- fold case when comparing, or dedupe for a distinct count the way
-# the old map did, and the computed bounds exclude one of two real values. The optimizer then prunes a
-# partition that holds matching rows, and the query returns fewer rows than it should. Same error, and
-# this time it deletes rows at QUERY time rather than at write time, which is worse: no write to
-# inspect, no catalog state to notice, just a wrong answer.
-#
-# GREEN today (no statistics exist, so nothing can be folded). The correctness assertions are the point
-# of the file -- they must STAY green through Mod 1. Only the group-count assertion is red.
 
 require httpfs
 
@@ -54,9 +37,7 @@ SELECT country FROM glue_partitions('my_datalake.default.stat_case') ORDER BY co
 US
 us
 
-# ---- the assertions that must survive Mod 1 ---------------------------------------------------------
-# an equality filter on either value finds its own row and only its own row. Case-folded bounds, or a
-# case-folded distinct set, prune one of these to empty
+# an equality filter on either value finds its own row and only its own row.
 query I
 SELECT id FROM my_datalake.default.stat_case WHERE country = 'US';
 ----
@@ -73,8 +54,7 @@ SELECT count(*) FROM my_datalake.default.stat_case WHERE country BETWEEN 'US' AN
 ----
 2
 
-# each bound probed on its own: these are the two filters that break first if min/max folds case,
-# because a folded min and max are the SAME value and the range collapses
+# each bound probed on its own
 query I
 SELECT id FROM my_datalake.default.stat_case WHERE country > 'US';
 ----
@@ -91,13 +71,92 @@ SELECT count(*) FROM my_datalake.default.stat_case WHERE country = 'Us';
 ----
 0
 
-# ---- the estimate ----------------------------------------------------------------------------------
-# RED: two partitions, so at most two groups. Today the estimate is derived from the fabricated scan
-# cardinality with no distinct count to go on.
-query II
-EXPLAIN SELECT country, count(*) FROM my_datalake.default.stat_case GROUP BY country;
+# ----------------------------------------------------------------------------------------------------
+# The same question as estimates, which needs a bigger fixture than the two rows above.
+# ----------------------------------------------------------------------------------------------------
+
+statement ok
+DROP TABLE IF EXISTS my_datalake.default.vol_case;
+
+statement ok
+CREATE TABLE my_datalake.default.vol_case (id INTEGER, country VARCHAR) PARTITIONED BY (country);
+
+statement ok
+INSERT INTO my_datalake.default.vol_case SELECT i, CASE WHEN i % 2 = 0 THEN 'US' ELSE 'us' END FROM generate_series(1,600) t(i);
+
+statement ok
+DROP TABLE IF EXISTS my_datalake.default.vol_ctrl;
+
+statement ok
+CREATE TABLE my_datalake.default.vol_ctrl (id INTEGER, country VARCHAR) PARTITIONED BY (country);
+
+statement ok
+INSERT INTO my_datalake.default.vol_ctrl SELECT i, CASE WHEN i % 2 = 0 THEN 'US' ELSE 'CA' END FROM generate_series(1,600) t(i);
+
+query III
+SELECT (SELECT count(*) FROM glue_partitions('my_datalake.default.vol_case')),
+       (SELECT count(*) FROM my_datalake.default.vol_case WHERE country = 'US'),
+       (SELECT count(*) FROM my_datalake.default.vol_case WHERE country = 'us');
 ----
-physical_plan	<REGEX>:.*Hash Group By.*~[0-9] rows.*
+2	300	300
+
+query II
+EXPLAIN SELECT country, count(*) FROM my_datalake.default.vol_case GROUP BY country;
+----
+physical_plan	<REGEX>:.*Hash Group By.*~2 rows.*
+
+query II
+EXPLAIN SELECT country, count(*) FROM my_datalake.default.vol_ctrl GROUP BY country;
+----
+physical_plan	<REGEX>:.*Hash Group By.*~2 rows.*
+
+# Each predicate on the plan, where "Scanning Files: 1/2" is the direct evidence that pruning kept the
+# one partition the filter names. Pushed-down equality and range both take the flat 0.2, so 300 rows
+# estimate at ~60
+query II
+EXPLAIN SELECT * FROM my_datalake.default.vol_case WHERE country = 'US';
+----
+physical_plan	<REGEX>:.*Read Parquet.*Scanning Files: 1/2.*~60 rows.*
+
+query II
+EXPLAIN SELECT * FROM my_datalake.default.vol_case WHERE country = 'us';
+----
+physical_plan	<REGEX>:.*Read Parquet.*Scanning Files: 1/2.*~60 rows.*
+
+# the two range bounds: a folded bound
+# would keep both partitions or neither
+query II
+EXPLAIN SELECT * FROM my_datalake.default.vol_case WHERE country > 'US';
+----
+physical_plan	<REGEX>:.*Read Parquet.*Scanning Files: 1/2.*~60 rows.*
+
+query II
+EXPLAIN SELECT * FROM my_datalake.default.vol_case WHERE country < 'us';
+----
+physical_plan	<REGEX>:.*Read Parquet.*Scanning Files: 1/2.*~60 rows.*
+
+# spanning both: nothing is pruned, 600 rows through the same 0.2
+query II
+EXPLAIN SELECT * FROM my_datalake.default.vol_case WHERE country BETWEEN 'US' AND 'us';
+----
+physical_plan	<REGEX>:.*Read Parquet.*~120 rows.*
+
+# 'Us' sorts strictly BETWEEN 'US' and 'us', so pruning to 0/2
+query II
+EXPLAIN SELECT * FROM my_datalake.default.vol_case WHERE country = 'Us';
+----
+physical_plan	<REGEX>:.*Read Parquet.*Scanning Files: 0/2.*~0 rows.*
+
+query I
+SELECT count(*) FROM my_datalake.default.vol_case WHERE country = 'Us';
+----
+0
 
 statement ok
 DROP TABLE my_datalake.default.stat_case;
+
+statement ok
+DROP TABLE my_datalake.default.vol_case;
+
+statement ok
+DROP TABLE my_datalake.default.vol_ctrl;
