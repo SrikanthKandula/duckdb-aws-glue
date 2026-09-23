@@ -456,19 +456,13 @@ static const TableFunction &GetListReadFunction(ClientContext &context, const st
 //===--------------------------------------------------------------------===//
 // Cardinality sample
 //===--------------------------------------------------------------------===//
-//! List ONE partition and open ONE of its files, so the scan's cost reflects its data. Glue carries no statistics of
-//! any kind (no numRows, no totalSize, and Partition.Parameters is null), so without this the estimate is a constant:
-//! a 40-row dimension table and a 200,000-row fact table cost the same, and csv/json/avro are estimated at one row.
+//! List ONE partition and open ONE of its files, so the scan's cost reflects its data.
 //!
-//! This is the trick read_parquet already plays -- it globs and binds on the first file, which is what fills in
-//! ParquetReadBindData::initial_file_cardinality. We skip that path because Glue gives us the schema, so we take the
-//! row count from a file WITHOUT letting the file define the schema: the columns, their order and their types stay
-//! Glue's. The reader is asked for one file's worth of rows through the interface, which is the only thing that can
-//! read a parquet footer.
-//! Rows in one file of a line-oriented format, measured rather than assumed: read a bounded prefix, count its lines,
+//! This is the trick read_parquet already plays -- it globs and binds on the first file. We skip that path because
+//! Glue gives us the schema, so we take the row count from a file.
+//! Files in line-oriented formats such as csv and json read a bounded prefix, count its lines,
 //! and scale the average line length over the file. csv and newline-delimited json are one row per line. There is no
-//! footer to ask, so this is the only way to get a number that responds to the data at all -- and a measured average
-//! beats a constant bytes-per-row, which cannot hold across two tables with different columns.
+//! footer to ask.
 static optional_idx SampleLineOrientedRowsPerFile(ClientContext &context, const OpenFileInfo &file, bool header) {
 	static constexpr idx_t SAMPLE_BYTES = 65536;
 	auto &fs = FileSystem::GetFileSystem(context);
@@ -607,10 +601,9 @@ static unique_ptr<NodeStatistics> HiveScanCardinality(ClientContext &context, co
 //===--------------------------------------------------------------------===//
 // Partition column statistics
 //===--------------------------------------------------------------------===//
-//! Statistics for a partition column, from the values of the partitions the scan will read. Those values are the
-//! complete set of values the column takes, so min/max, the distinct count and has-null are exact and cost no file I/O.
-//! DuckDB otherwise declines statistics for a hive column entirely: the file holds the column the partition value
-//! overrides, and may type it differently. Any column that is not a partition key is left to the format's own function.
+//! Statistics for a partition column, from the values of the partitions the scan will read. We get the
+//! complete set of values the column takes and can derive min/max, the distinct count and has-null.
+//! Columns that are not partition keys are left to the format's own function.
 static unique_ptr<BaseStatistics> HivePartitionStatistics(ClientContext &context,
                                                           TableFunctionGetStatisticsInput &input) {
 	auto &bind_data = input.bind_data->Cast<MultiFileBindData>();
@@ -629,7 +622,7 @@ static unique_ptr<BaseStatistics> HivePartitionStatistics(ClientContext &context
 		}
 	}
 	if (key_index == DConstants::INVALID_INDEX) {
-		// a data column, a struct field or a virtual column: what the files hold is not ours to describe
+		// a data column, a struct field or a virtual column
 		return info.format_statistics ? info.format_statistics(context, input) : nullptr;
 	}
 

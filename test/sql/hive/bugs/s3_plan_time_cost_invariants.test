@@ -1,21 +1,9 @@
 # name: test/sql/hive/bugs/s3_plan_time_cost_invariants.test
-# description: S3 guard - planning a Glue table samples ONE partition and no more, however many it has, and still asks Glue exactly once for the table and once for the partitions.
+# description: S3 guard - planning a Glue table samples ONE partition.
 # group: [bugs]
 
-#
-# Unlike its siblings this file asserts no defect. It pins the plan-time budget, and the number it pins
-# changed once: it used to require ZERO listings, which is what made the estimate a constant. Glue carries
-# no statistics of any kind, so a cost that reflects the data has to come from the data, and the cheapest
-# honest source is one partition. read_parquet already pays more than this -- it globs and opens the first
-# file at bind time -- so the budget here is still below core's for the equivalent scan.
-#
-# What matters is that it is ONE, not one per partition. A per-partition sample would improve the plan
-# while making bind time grow with the table, which is the failure this file exists to catch, and it would
-# do it silently. The second table below is the real guard: many more partitions, still one listing.
-#
-# The old zero is also why the estimate used to be a constant, which is worth keeping on the record: with
-# no file opened at plan time, parquet's initial_file_cardinality was never populated and its
-# min_per_file_cardinality floor of 1000 bound unconditionally.
+# A per-partition sample would improve the plan while making bind time grow with the table.
+
 
 require httpfs
 
@@ -66,9 +54,7 @@ statement ok
 DROP TABLE my_datalake.default.plancost;
 
 # ----------------------------------------------------------------------------------------------------
-# THE GUARD: the sample must not grow with the table. Twenty partitions is also above
-# hive_partition_listing_threshold, so the root-listing path is exercised too -- that path lists
-# recursively and would be the expensive way to get here.
+# THE GUARD: the sample must not grow with the table.
 # ----------------------------------------------------------------------------------------------------
 statement ok
 DROP TABLE IF EXISTS my_datalake.default.plancost_wide;

@@ -1,19 +1,6 @@
 # name: test/sql/hive/bugs/s3_numeric_partition_column_statistics.test
-# description: S3 - partition-column statistics are missing for a NUMERIC partition key too, which is the shape real tables use: TPC-DS partitions store_sales by ss_sold_date_sk, an INTEGER.
+# description: S3 - partition-column statistics for NUMERIC partition columns.
 # group: [bugs]
-
-#
-# The sibling partition-statistics test uses a VARCHAR key. This one exists because the numeric case goes
-# through a type conversion the string case does not: Glue stores every partition value as a STRING, so an
-# INTEGER partition column has to be cast on the way in. That conversion already has a known-buggy
-# neighbour -- PartitionValueToValue discards its cast result, skips unescaping and NULLs anything it
-# cannot parse (recorded as G25) -- so min/max and distinct count on a numeric partition key are exactly
-# where a plausible implementation would go wrong while the VARCHAR test stayed green.
-#
-# The reads themselves are fine today, asserted below, so this is specifically about statistics.
-#
-# Correct behaviour: four partitions means at most four groups, and min/max on the key are the real
-# numeric bounds rather than absent.
 
 require httpfs
 
@@ -37,7 +24,7 @@ CREATE TABLE my_datalake.default.numpart (id INTEGER, sk INTEGER) PARTITIONED BY
 statement ok
 INSERT INTO my_datalake.default.numpart SELECT i, 2450000 + (i % 4) FROM generate_series(1,4000) t(i);
 
-# the numeric partition column round-trips correctly today -- this file is about statistics, not reads
+# assess where we are at
 query II
 SELECT sk, count(*) FROM my_datalake.default.numpart GROUP BY sk ORDER BY sk;
 ----
@@ -52,11 +39,18 @@ SELECT count(*) FROM glue_partitions('my_datalake.default.numpart');
 ----
 4
 
-# THE DEFECT: four partitions, so at most four groups, on an INTEGER key.
+# four partitions, so at most four groups, even on an INTEGER key.
 query II
 EXPLAIN SELECT sk, count(*) FROM my_datalake.default.numpart GROUP BY sk;
 ----
-physical_plan	<REGEX>:.*Hash Group By.*~[0-9]{1,2} rows.*
+physical_plan	<REGEX>:.*Hash Group By.*~4 rows.*
+
+
+# two partitions, so two groups.
+query II
+EXPLAIN SELECT sk, count(*) FROM my_datalake.default.numpart where sk < 2450002 GROUP BY sk;
+----
+physical_plan	<REGEX>:.*Hash Group By.*~2 rows.*
 
 statement ok
 DROP TABLE my_datalake.default.numpart;

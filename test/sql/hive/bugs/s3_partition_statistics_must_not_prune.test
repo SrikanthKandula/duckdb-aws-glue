@@ -1,17 +1,7 @@
 # name: test/sql/hive/bugs/s3_partition_statistics_must_not_prune.test
-# description: S3 guard - partition-column statistics must never prune a row that exists. GREEN today, and the most important file in this set to keep green.
-# group: [bugs]
+# description: partition-column statistics must not prune a row that exists.
 
-#
-# Today there are no partition-column statistics, so nothing prunes on them: queries are slower than they
-# need to be but they are CORRECT. Supplying min/max changes that. StatisticsPropagator uses column
-# statistics to decide FILTER_ALWAYS_FALSE and then calls ReplaceWithEmptyResult
-# (propagate_get.cpp), so a filter the statistics say cannot match is answered with an empty
-# result WITHOUT reading anything. If our min/max disagrees with the values the scan actually emits, the
-# query returns ZERO ROWS instead of data.
-#
-# So "exact statistics" is only exact if the values we read equal the values the scan produces, and there
-# are at least two places where they do not:
+# Corner case protection:
 #
 #   - Percent-encoded catalog values. Glue may hold 'a%20b' where the data column reads 'a b' -- that is
 #     how every catalog written before the encoding fix looks, and nothing repairs them. Statistics built
@@ -19,9 +9,6 @@
 #   - The NULL sentinel. A NULL partition is stored with the DIRECTORY dt=__HIVE_DEFAULT_PARTITION__ while
 #     the scan emits NULL. Treating the sentinel as an ordinary string leaves has_null false, and the
 #     optimizer can then prove WHERE dt IS NULL impossible and answer it with an empty result.
-#
-# Both turn an optimisation into a wrong-results bug, which is a strictly worse failure than the bad plans
-# these statistics are meant to fix. This file asserts the rows come back. It must pass before and after.
 
 require httpfs
 
