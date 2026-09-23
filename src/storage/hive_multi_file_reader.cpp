@@ -79,6 +79,19 @@ static bool IsHiddenPath(const string &relative_path) {
 	return false;
 }
 
+//! The size the listing reported for a file, when it reported one. S3 and the local filesystem both carry it, so the
+//! bytes of a table are known from the listing alone, without opening anything
+static optional_idx ListedFileSize(const OpenFileInfo &file) {
+	if (!file.extended_info) {
+		return optional_idx();
+	}
+	idx_t size;
+	if (!file.extended_info->TryGetOption("file_size", size)) {
+		return optional_idx();
+	}
+	return size;
+}
+
 //! The data files below 'location', at any depth (like read_parquet on a directory)
 static void ListDataFiles(FileSystem &fs, const string &location, vector<OpenFileInfo> &files) {
 	auto directory = location;
@@ -300,16 +313,10 @@ MultiFileCount HiveMultiFileList::GetFileCount(idx_t min_exact_count) const {
 	return MultiFileCount(expanded_files.size() + remaining, FileExpansionType::NOT_ALL_FILES_KNOWN);
 }
 
-optional_idx HiveMultiFileList::EstimateTotalFileCount() const {
-	lock_guard<mutex> lck(lock);
-	if (all_files_expanded) {
-		return expanded_files.size();
-	}
-	PlanListings();
-	// how many partitions the jobs already run covered, and how many are still to come. A root job covers every
-	// partition below the table root, a partition job covers one.
-	idx_t covered = 0;
-	idx_t remaining = 0;
+void HiveMultiFileList::CountPartitions(idx_t &covered, idx_t &remaining) const {
+	// a root job covers every partition below the table root, a partition job covers one
+	covered = 0;
+	remaining = 0;
 	for (idx_t i = 0; i < jobs.size(); i++) {
 		auto partitions = jobs[i].root ? MaxValue<idx_t>(jobs[i].partitions.size(), 1) : 1;
 		if (i < next_job) {
@@ -318,6 +325,17 @@ optional_idx HiveMultiFileList::EstimateTotalFileCount() const {
 			remaining += partitions;
 		}
 	}
+}
+
+optional_idx HiveMultiFileList::EstimateTotalFileCount() const {
+	lock_guard<mutex> lck(lock);
+	if (all_files_expanded) {
+		return expanded_files.size();
+	}
+	PlanListings();
+	idx_t covered;
+	idx_t remaining;
+	CountPartitions(covered, remaining);
 	if (covered == 0) {
 		// nothing listed yet: there is no observed rate to extrapolate
 		return optional_idx();
@@ -326,6 +344,66 @@ optional_idx HiveMultiFileList::EstimateTotalFileCount() const {
 	auto files_per_partition = static_cast<double>(expanded_files.size()) / static_cast<double>(covered);
 	auto estimate = static_cast<double>(expanded_files.size()) + files_per_partition * static_cast<double>(remaining);
 	return MaxValue<idx_t>(static_cast<idx_t>(estimate), 1);
+}
+
+HiveMultiFileList::ByteEstimate HiveMultiFileList::EstimateBytes() const {
+	lock_guard<mutex> lck(lock);
+	ByteEstimate result;
+	idx_t bytes = 0;
+	idx_t sized = 0;
+	for (auto &file : expanded_files) {
+		auto size = ListedFileSize(file);
+		if (!size.IsValid()) {
+			continue;
+		}
+		if (sized == 0 || size.GetIndex() < result.smallest) {
+			result.smallest = size.GetIndex();
+		}
+		if (size.GetIndex() > result.largest) {
+			result.largest = size.GetIndex();
+		}
+		bytes += size.GetIndex();
+		sized++;
+	}
+	if (sized == 0) {
+		return result;
+	}
+	// a file the listing gave no size for counts as an average one
+	bytes += (bytes / sized) * (expanded_files.size() - sized);
+	if (all_files_expanded) {
+		result.total = bytes;
+		return result;
+	}
+	PlanListings();
+	idx_t covered;
+	idx_t remaining;
+	CountPartitions(covered, remaining);
+	if (covered == 0) {
+		return result;
+	}
+	auto bytes_per_partition = static_cast<double>(bytes) / static_cast<double>(covered);
+	auto estimate = static_cast<double>(bytes) + bytes_per_partition * static_cast<double>(remaining);
+	result.total = MaxValue<idx_t>(static_cast<idx_t>(estimate), 1);
+	return result;
+}
+
+OpenFileInfo HiveMultiFileList::GetSampleFile() const {
+	// expands the first listing job only, and the files stay in the list for the scan to read
+	auto first = GetFirstFile();
+	if (first.path.empty()) {
+		return first;
+	}
+	lock_guard<mutex> lck(lock);
+	optional_idx largest;
+	idx_t largest_size = 0;
+	for (idx_t i = 0; i < expanded_files.size(); i++) {
+		auto size = ListedFileSize(expanded_files[i]);
+		if (size.IsValid() && (!largest.IsValid() || size.GetIndex() > largest_size)) {
+			largest = i;
+			largest_size = size.GetIndex();
+		}
+	}
+	return largest.IsValid() ? expanded_files[largest.GetIndex()] : first;
 }
 
 vector<OpenFileInfo> HiveMultiFileList::GetDisplayFileList(optional_idx max_files) const {
@@ -422,20 +500,27 @@ static optional_idx SampleLineOrientedRowsPerFile(ClientContext &context, const 
 	return MaxValue<idx_t>(rows, 1);
 }
 
-//! Rows in one data file of the scan, measured once and remembered. The file is taken from the scan's own file list,
-//! which means the listing it costs is the listing the scan was going to do anyway -- only earlier.
-static optional_idx SampleRowsPerFile(ClientContext &context, const MultiFileBindData &bind_data,
-                                      const HiveMultiFileList &files, const HiveScanInfo &scan_info) {
+//! Rows and bytes of one data file of the scan
+struct FileSample {
+	optional_idx rows;
+	optional_idx bytes;
+};
+
+//! Measure one data file of the scan, once, and remember it. The file is taken from the scan's own file list, which
+//! means the listing it costs is the listing the scan was going to do anyway -- only earlier.
+static FileSample SampleFile(ClientContext &context, const MultiFileBindData &bind_data, const HiveMultiFileList &files,
+                             const HiveScanInfo &scan_info) {
 	lock_guard<mutex> lck(scan_info.sample_lock);
-	if (scan_info.rows_sample_attempted) {
-		return scan_info.sampled_rows_per_file;
+	if (scan_info.file_sample_attempted) {
+		return FileSample {scan_info.sampled_file_rows, scan_info.sampled_file_bytes};
 	}
-	scan_info.rows_sample_attempted = true;
-	// expands the first listing job only, and the files stay in the list for the scan to read
-	auto file = files.GetFirstFile();
+	scan_info.file_sample_attempted = true;
+	auto file = files.GetSampleFile();
 	if (file.path.empty()) {
-		return optional_idx();
+		return FileSample {};
 	}
+	// the size the listing already reported, so it is measured the same way as every other file's
+	scan_info.sampled_file_bytes = ListedFileSize(file);
 	switch (scan_info.file_format) {
 	case HiveFileFormat::PARQUET: {
 		// the row count is in the footer, and the format's own reader is the only thing that can read it. Parquet is
@@ -448,14 +533,14 @@ static optional_idx SampleRowsPerFile(ClientContext &context, const MultiFileBin
 		auto reader = bind_data.multi_file_reader->CreateReader(context, file, *options, bind_data.file_options,
 		                                                        *probe_data.interface);
 		if (!reader) {
-			return optional_idx();
+			return FileSample {optional_idx(), scan_info.sampled_file_bytes};
 		}
 		probe_data.Initialize(std::move(reader));
 		probe_data.interface->FinalizeBindData(probe_data);
 		// file_count 1 makes the format report that one file's rows rather than an extrapolation over the list
 		auto sampled = probe_data.interface->GetCardinality(context, probe_data, 1);
 		if (sampled && sampled->has_estimated_cardinality) {
-			scan_info.sampled_rows_per_file = sampled->estimated_cardinality;
+			scan_info.sampled_file_rows = sampled->estimated_cardinality;
 		}
 		break;
 	}
@@ -463,17 +548,18 @@ static optional_idx SampleRowsPerFile(ClientContext &context, const MultiFileBin
 	case HiveFileFormat::JSON:
 		// no reader is built for these: they are bound with a dialect and an explicit column list that fresh options
 		// would not reproduce. Counting lines needs none of it
-		scan_info.sampled_rows_per_file = SampleLineOrientedRowsPerFile(context, file, scan_info.header);
+		scan_info.sampled_file_rows = SampleLineOrientedRowsPerFile(context, file, scan_info.header);
 		break;
 	case HiveFileFormat::AVRO:
 		// binary, with its own block structure: no bounded way to count rows without an avro reader
 		break;
 	}
-	return scan_info.sampled_rows_per_file;
+	return FileSample {scan_info.sampled_file_rows, scan_info.sampled_file_bytes};
 }
 
-//! Cardinality of a Hive scan, from one sampled file and the files the scan will read. Replaces a constant: without it
-//! a 40-row dimension table and a 200,000-row fact table cost the same, and csv/json/avro are estimated at one row.
+//! Cardinality of a Hive scan: the rows per byte of one sampled file, over the bytes of the files the scan will read.
+//! Replaces a constant: without it a 40-row dimension table and a 200,000-row fact table cost the same, and
+//! csv/json/avro are estimated at one row.
 static unique_ptr<NodeStatistics> HiveScanCardinality(ClientContext &context, const FunctionData *bind_data_p) {
 	auto &bind_data = bind_data_p->Cast<MultiFileBindData>();
 	auto hive_list = dynamic_cast<const HiveMultiFileList *>(bind_data.file_list.get());
@@ -484,25 +570,38 @@ static unique_ptr<NodeStatistics> HiveScanCardinality(ClientContext &context, co
 	auto fallback = [&]() -> unique_ptr<NodeStatistics> {
 		return scan_info.format_cardinality ? scan_info.format_cardinality(context, bind_data_p) : nullptr;
 	};
-	optional_idx rows_per_file;
+	// the partitions this scan reads -- pruning has already happened by the time the cardinality is asked for, so a
+	// filtered scan is costed on what it actually reads
+	FileSample sample;
+	HiveMultiFileList::ByteEstimate bytes;
 	try {
-		rows_per_file = SampleRowsPerFile(context, bind_data, *hive_list, scan_info);
+		sample = SampleFile(context, bind_data, *hive_list, scan_info);
+		bytes = hive_list->EstimateBytes();
 	} catch (std::exception &) {
 		// costing must not fail a query: a file that cannot be listed or opened is the scan's problem to report
 		return fallback();
 	}
-	if (!rows_per_file.IsValid()) {
-		return fallback();
-	}
-	// the file count of the partitions this scan reads -- pruning has already happened by the time the cardinality is
-	// asked for, so a filtered scan is costed on what it actually reads
-	auto file_count = hive_list->EstimateTotalFileCount();
-	if (!file_count.IsValid()) {
+	if (!sample.rows.IsValid()) {
 		return fallback();
 	}
 	// An estimate, never a max: max_cardinality is a bound the optimizer may rely on, and one file says nothing about
 	// the size of the rest.
-	return make_uniq<NodeStatistics>(rows_per_file.GetIndex() * file_count.GetIndex());
+	//
+	// Files of about one size hold about one number of rows, so the measured file stands in for all of them and the
+	// answer is exact when they are equal -- which is the normal shape, one similar file per INSERT. Once they differ
+	// by more than a factor of two the count says nothing (10 rows beside 90,000 is two files either way) and only
+	// bytes carry the difference.
+	if (bytes.total.IsValid() && sample.bytes.IsValid() && sample.bytes.GetIndex() > 0 &&
+	    bytes.largest > bytes.smallest * 2) {
+		auto rows = static_cast<double>(bytes.total.GetIndex()) / static_cast<double>(sample.bytes.GetIndex()) *
+		            static_cast<double>(sample.rows.GetIndex());
+		return make_uniq<NodeStatistics>(MaxValue<idx_t>(static_cast<idx_t>(rows), 1));
+	}
+	auto file_count = hive_list->EstimateTotalFileCount();
+	if (!file_count.IsValid()) {
+		return fallback();
+	}
+	return make_uniq<NodeStatistics>(sample.rows.GetIndex() * file_count.GetIndex());
 }
 
 //===--------------------------------------------------------------------===//
