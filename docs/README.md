@@ -74,7 +74,7 @@ Text tables are read the way their SerDe reads them:
   NULL string. Writes need a single-byte delimiter.
 - As in Hive, a table property overrides the SerDe property of the same name and keys are case-sensitive. Line counts
   and byte codes are DuckDB integer casts (`'1.5'` is 2). Partitions are read with the table's SerDe properties, not
-  their own. `hive_scan()` uses plain `read_csv` rules.
+  their own. `hive_scan()` uses plain `read_csv` rules unless `serde_fields := true`.
 
 Every format is scanned through a custom `MultiFileReader` (`HiveMultiFileReader`) with these read semantics:
 
@@ -258,10 +258,15 @@ SELECT * FROM hive_scan('s3://bucket/warehouse/orders',
 ```
 
 - `schema` (required): a struct of column name to DuckDB type name, data columns and partition columns.
-- `format`: `'parquet'` (default), `'csv'`, `'json'` or `'avro'`. For csv, `header := true`, `delim := '|'`,
-  `quote := '"'`, `escape := '\'` and `nullstr := '\N'` describe the files (an empty field is NULL unless `nullstr`
-  says otherwise, as in `read_csv`); csv columns are matched by position, json keys by name. For json,
-  `ignore_errors := true` reads a line that is not valid JSON as a row of NULLs.
+- `format`: `'parquet'` (default), `'csv'`, `'json'` or `'avro'`. For csv, `header := true` (or `skip := 2`, the
+  header lines every file starts with), `delim := '|'`, `quote := '"'`, `escape := '\'` and `nullstr := '\N'`
+  describe the files (an empty field is NULL unless `nullstr` says otherwise, as in `read_csv`); csv columns are
+  matched by position, json keys by name. For json, `ignore_errors := true` reads a line that is not valid JSON as a
+  row of NULLs.
+- `serde_fields := true` reads csv the way a Glue text table is read (see Reading): short rows are padded with
+  NULL, extra fields are ignored and a field that does not parse as its column type is NULL, or fails the query with
+  `null_for_invalid_data := false`. `parallel := false` reads one thread per file; it defaults to
+  `hive_csv_parallel` with `serde_fields` and a quote, else to true.
 - `partitions`: one struct per partition with a value for every partition key, an optional `location` and optional
   `files`; without a location the partition lives at `<root>/<key>=<value>/...`. The partition keys are the struct
   fields other than `location` and `files`, in that order, unless `partition_keys := [...]` names them. Without

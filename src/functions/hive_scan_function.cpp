@@ -187,6 +187,10 @@ unique_ptr<FunctionData> HiveScanBind(ClientContext &context, TableFunctionBindI
 	optional_ptr<const Value> partition_keys;
 	optional_ptr<const Value> partitions;
 	optional_ptr<const Value> files;
+	bool header_given = false;
+	bool skip_given = false;
+	bool null_for_invalid_data_given = false;
+	bool parallel_given = false;
 	for (auto &option : input.named_parameters) {
 		auto name = StringUtil::Lower(option.first.GetIdentifierName());
 		if (name == "schema") {
@@ -197,6 +201,8 @@ unique_ptr<FunctionData> HiveScanBind(ClientContext &context, TableFunctionBindI
 			partitions = option.second;
 		} else if (name == "files") {
 			files = option.second;
+		} else if (option.second.IsNull()) {
+			throw BinderException("hive_scan: '%s' must not be NULL", name);
 		} else if (name == "format") {
 			scan_info->file_format = HiveFileFormatFromString(option.second.GetValue<string>());
 		} else if (name == "delim") {
@@ -207,11 +213,37 @@ unique_ptr<FunctionData> HiveScanBind(ClientContext &context, TableFunctionBindI
 			scan_info->csv_options.escape = option.second.GetValue<string>();
 		} else if (name == "header") {
 			scan_info->csv_options.skip_lines = option.second.GetValue<bool>() ? 1 : 0;
+			header_given = true;
+		} else if (name == "skip") {
+			auto skip = option.second.GetValue<int64_t>();
+			if (skip < 0) {
+				throw BinderException("hive_scan: 'skip' must not be negative, but is %d", skip);
+			}
+			scan_info->csv_options.skip_lines = NumericCast<idx_t>(skip);
+			skip_given = true;
 		} else if (name == "nullstr") {
 			scan_info->csv_options.null_string = option.second.GetValue<string>();
+		} else if (name == "serde_fields") {
+			scan_info->csv_options.serde_fields = option.second.GetValue<bool>();
+		} else if (name == "null_for_invalid_data") {
+			scan_info->csv_options.null_for_invalid_data = option.second.GetValue<bool>();
+			null_for_invalid_data_given = true;
+		} else if (name == "parallel") {
+			scan_info->csv_options.parallel = option.second.GetValue<bool>();
+			parallel_given = true;
 		} else if (name == "ignore_errors") {
 			scan_info->json_options.ignore_errors = option.second.GetValue<bool>();
 		}
+	}
+	if (header_given && skip_given) {
+		throw BinderException("hive_scan: give either 'header' or 'skip' (the number of header lines), not both");
+	}
+	if (null_for_invalid_data_given && !scan_info->csv_options.serde_fields) {
+		throw BinderException("hive_scan: 'null_for_invalid_data' needs serde_fields := true: with read_csv rules a "
+		                      "field that does not parse as its column type fails the query");
+	}
+	if (!parallel_given) {
+		scan_info->csv_options.UseParallelSetting(context);
 	}
 	if (!schema) {
 		throw BinderException("hive_scan requires the table schema: hive_scan('s3://...', schema := {id: 'INTEGER', "
@@ -305,7 +337,11 @@ TableFunctionSet GetHiveScanFunction(DatabaseInstance &db) {
 		options.Add("quote", LogicalType::VARCHAR);
 		options.Add("escape", LogicalType::VARCHAR);
 		options.Add("header", LogicalType::BOOLEAN);
+		options.Add("skip", LogicalType::BIGINT);
 		options.Add("nullstr", LogicalType::VARCHAR);
+		options.Add("serde_fields", LogicalType::BOOLEAN);
+		options.Add("null_for_invalid_data", LogicalType::BOOLEAN);
+		options.Add("parallel", LogicalType::BOOLEAN);
 		options.Add("ignore_errors", LogicalType::BOOLEAN);
 	});
 	function.GetSignature() = std::move(signature);

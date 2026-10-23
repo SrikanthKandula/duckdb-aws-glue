@@ -797,14 +797,9 @@ TableFunction BindHiveScan(ClientContext &context, shared_ptr<HiveScanInfo> scan
 			// as the SerDes do: missing trailing fields are NULL and the fields beyond the last column are ignored
 			param_map["null_padding"] = Value::BOOLEAN(true);
 			param_map["strict_mode"] = Value::BOOLEAN(false);
-			if (!scan_info->csv_options.quote.empty()) {
-				// the parallel scanner refuses null_padding together with a quoted line break (hive_csv_parallel)
-				Value parallel;
-				if (context.TryGetCurrentSetting("hive_csv_parallel", parallel) && !parallel.IsNull() &&
-				    !BooleanValue::Get(parallel)) {
-					param_map["parallel"] = Value::BOOLEAN(false);
-				}
-			}
+		}
+		if (!scan_info->csv_options.parallel) {
+			param_map["parallel"] = Value::BOOLEAN(false);
 		}
 		break;
 	case HiveFileFormat::JSON:
