@@ -280,6 +280,19 @@ SELECT * FROM hive_scan('s3://bucket/warehouse/orders',
   globbed. Like `location`, `files` cannot be a partition key.
 - A root or partition without data files scans as zero rows.
 
+An engine that hands some of a scan's files to machines without Glue access can run them there as a `hive_scan()`
+call: `src/include/functions/hive_scan_call.hpp` restates a bound Hive scan, of a Glue table or of a `hive_scan()`
+call, as the call that reads the same files the same way.
+
+- `HiveScanGetCall(get)`: the root and the named arguments: `schema`, `format`, the format's reading options and
+  `partition_keys`. The caller adds the files to read, as
+  `partitions := [{<key>: <value>, ..., location: ..., files: [...]}, ...]`, or `files := [...]` for a table
+  without partition keys.
+- `HiveScanGetFilePartition(get, path)`: the values (as Glue stores them) and the location of the partition a file
+  of the scan belongs to.
+- Both read only the bound scan, with no `ClientContext` and no Glue call, and use only core DuckDB types. They
+  return nothing for a scan this build of the extension did not bind.
+
 ## Partitions
 
 DuckDB has no `ALTER TABLE ... PARTITION` syntax, so the Hive partition statements are table functions. The

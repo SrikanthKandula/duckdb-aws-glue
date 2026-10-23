@@ -103,6 +103,21 @@ const GluePartitionInfo &HiveScanInfo::GetPartitionOfFile(const string &path) co
 	return (*partitions)[partition_index];
 }
 
+optional_ptr<const GluePartitionInfo> HiveScanInfo::TryGetPartitionOfFile(const string &path) const {
+	idx_t partition_index;
+	{
+		lock_guard<mutex> guard(file_partitions_lock);
+		auto entry = file_partitions.find(path);
+		if (entry == file_partitions.end()) {
+			return nullptr;
+		}
+		partition_index = entry->second;
+	}
+	annotated_lock_guard<annotated_mutex> guard(partitions_lock);
+	D_ASSERT(partitions);
+	return &(*partitions)[partition_index];
+}
+
 string HiveScanInfo::Describe() const {
 	if (database_name.empty()) {
 		return table_name;

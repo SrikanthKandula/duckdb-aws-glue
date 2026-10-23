@@ -54,6 +54,8 @@ struct HiveScanInfo : public TableFunctionInfo {
 	//! The partition (index into 'partitions') the file at 'path' belongs to
 	idx_t GetPartitionIndexOfFile(const string &path) const;
 	const GluePartitionInfo &GetPartitionOfFile(const string &path) const;
+	//! Null for a file that is not attributed to a partition
+	optional_ptr<const GluePartitionInfo> TryGetPartitionOfFile(const string &path) const;
 	//! A description of the table for error messages
 	string Describe() const;
 	//! The partitions of the table: given at bind (hive_scan), or fetched from Glue on first use and shared with every

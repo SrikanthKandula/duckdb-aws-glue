@@ -1,13 +1,16 @@
 #include "functions/glue_functions.hpp"
+#include "functions/hive_scan_call.hpp"
 
 #include "duckdb/catalog/catalog.hpp"
 #include "duckdb/catalog/catalog_entry/table_function_catalog_entry.hpp"
 #include "duckdb/common/exception.hpp"
 #include "duckdb/common/hive_partitioning.hpp"
+#include "duckdb/common/multi_file/multi_file_states.hpp"
 #include "duckdb/common/string_util.hpp"
 #include "duckdb/common/unordered_set.hpp"
 #include "duckdb/main/client_context.hpp"
 #include "duckdb/main/database.hpp"
+#include "duckdb/planner/operator/logical_get.hpp"
 
 #include "planning/hive_multi_file_reader.hpp"
 
@@ -191,6 +194,7 @@ unique_ptr<FunctionData> HiveScanBind(ClientContext &context, TableFunctionBindI
 	bool skip_given = false;
 	bool null_for_invalid_data_given = false;
 	bool parallel_given = false;
+	// a reading argument added here is restated by HiveScanGetCall too
 	for (auto &option : input.named_parameters) {
 		auto name = StringUtil::Lower(option.first.GetIdentifierName());
 		if (name == "schema") {
@@ -298,7 +302,81 @@ unique_ptr<FunctionData> HiveScanListBind(ClientContext &context, TableFunctionB
 	throw BinderException("hive_scan takes a single root location, not a list of files");
 }
 
+//! A scan is a Hive scan of this build when BindHiveScan gave its reader the HiveMultiFileReader
+optional_ptr<const HiveScanInfo> HiveScanInfoOf(const LogicalGet &get) {
+	if (get.function.get_multi_file_reader != HiveMultiFileReader::CreateInstance || !get.bind_data) {
+		return nullptr;
+	}
+	auto &bind_data = get.bind_data->Cast<MultiFileBindData>();
+	if (!bind_data.multi_file_reader) {
+		return nullptr;
+	}
+	return &bind_data.multi_file_reader->Cast<HiveMultiFileReader>().ScanInfo();
+}
+
 } // namespace
+
+optional<HiveScanCall> HiveScanGetCall(const LogicalGet &get) {
+	auto info = HiveScanInfoOf(get);
+	if (!info) {
+		return nullopt;
+	}
+	HiveScanCall call;
+	call.root = info->root_location;
+	child_list_t<Value> schema;
+	for (idx_t i = 0; i < info->names.size(); i++) {
+		schema.emplace_back(info->names[i], Value(info->types[i].ToString()));
+	}
+	call.arguments["schema"] = Value::STRUCT(std::move(schema));
+	call.arguments["format"] = Value(HiveFileFormatToString(info->file_format));
+	if (!info->partition_keys.empty()) {
+		vector<Value> keys;
+		for (auto &key : info->partition_keys) {
+			keys.emplace_back(key);
+		}
+		call.arguments["partition_keys"] = Value::LIST(LogicalType::VARCHAR, std::move(keys));
+		call.partition_keys = info->partition_keys;
+	}
+	switch (info->file_format) {
+	case HiveFileFormat::CSV: {
+		auto &csv = info->csv_options;
+		call.arguments["delim"] = Value(csv.delimiter);
+		call.arguments["quote"] = Value(csv.quote);
+		call.arguments["escape"] = Value(csv.escape);
+		call.arguments["skip"] = Value::BIGINT(NumericCast<int64_t>(csv.skip_lines));
+		call.arguments["nullstr"] = Value(csv.null_string);
+		call.arguments["serde_fields"] = Value::BOOLEAN(csv.serde_fields);
+		if (csv.serde_fields) {
+			call.arguments["null_for_invalid_data"] = Value::BOOLEAN(csv.null_for_invalid_data);
+		}
+		// as bound: hive_csv_parallel was resolved in the session that planned the scan
+		call.arguments["parallel"] = Value::BOOLEAN(csv.parallel);
+		break;
+	}
+	case HiveFileFormat::JSON:
+		call.arguments["ignore_errors"] = Value::BOOLEAN(info->json_options.ignore_errors);
+		break;
+	case HiveFileFormat::PARQUET:
+	case HiveFileFormat::AVRO:
+		break;
+	}
+	return call;
+}
+
+optional<HiveScanFilePartition> HiveScanGetFilePartition(const LogicalGet &get, const string &path) {
+	auto info = HiveScanInfoOf(get);
+	if (!info || info->partition_keys.empty()) {
+		return nullopt;
+	}
+	auto partition = info->TryGetPartitionOfFile(path);
+	if (!partition) {
+		return nullopt;
+	}
+	HiveScanFilePartition result;
+	result.values = partition->values;
+	result.location = partition->location;
+	return result;
+}
 
 TableFunctionSet GetHiveScanFunction(DatabaseInstance &db) {
 	// hive_scan is read_parquet with its own bind: the schema and partitions come from the arguments instead of from a
