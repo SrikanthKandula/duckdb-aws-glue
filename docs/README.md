@@ -262,11 +262,17 @@ SELECT * FROM hive_scan('s3://bucket/warehouse/orders',
   `quote := '"'`, `escape := '\'` and `nullstr := '\N'` describe the files (an empty field is NULL unless `nullstr`
   says otherwise, as in `read_csv`); csv columns are matched by position, json keys by name. For json,
   `ignore_errors := true` reads a line that is not valid JSON as a row of NULLs.
-- `partitions`: one struct per partition with a value for every partition key and an optional `location`; without
-  a location the partition lives at `<root>/<key>=<value>/...`. The partition keys are the struct fields other than
-  `location`, in that order, unless `partition_keys := [...]` names them. Without `partitions` the table is
-  unpartitioned and all files below the root are read; `partition_keys` without `partitions` is an error, and
-  `partitions := []` with `partition_keys` reads no rows.
+- `partitions`: one struct per partition with a value for every partition key, an optional `location` and optional
+  `files`; without a location the partition lives at `<root>/<key>=<value>/...`. The partition keys are the struct
+  fields other than `location` and `files`, in that order, unless `partition_keys := [...]` names them. Without
+  `partitions` the table is unpartitioned and all files below the root are read; `partition_keys` without
+  `partitions` is an error, and `partitions := []` with `partition_keys` reads no rows.
+- `files`: the data files to read instead of listing them, per partition (`{dt: '...', files: [...]}`), or as
+  `files := [...]` for an unpartitioned table. An entry is a path, or a struct of a `filename` and the options to open
+  the file with, as `read_parquet` takes them (`{filename: 's3://...', file_size: 1234}`). Either every partition
+  gives its files or none does, `files: []` reads nothing from that partition, and a file may be given once. Nothing
+  is listed, not even for the row-count estimate, and a file is read as given: no name is skipped and nothing is
+  globbed. Like `location`, `files` cannot be a partition key.
 - A root or partition without data files scans as zero rows.
 
 ## Partitions

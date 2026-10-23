@@ -34,6 +34,10 @@ struct HiveScanInfo : public TableFunctionInfo {
 	HiveJSONOptions json_options;
 	//! The partition keys, in order
 	vector<string> partition_keys;
+	//! A hive_scan given its data files lists nothing: the files per partition (as Partitions()), or of the root
+	bool explicit_files = false;
+	vector<vector<OpenFileInfo>> partition_files;
+	vector<OpenFileInfo> root_files;
 	//! The partition (index into Partitions()) each listed data file belongs to. Filled in while the file list expands,
 	//! which can run concurrently with opening files.
 	mutable mutex file_partitions_lock;
@@ -70,7 +74,7 @@ private:
 //! the files are matched to their partitions by prefix; otherwise, and for partitions elsewhere, every partition is
 //! one listing of its location. An unpartitioned table is one listing of the root location. A directory is listed once
 //! per query (scans and the sample share the listing); with glue_cache_listings the listings of Glue tables are kept
-//! for later statements of the connection as well.
+//! for later statements of the connection as well. A hive_scan given its files lists nothing.
 class HiveMultiFileList : public LazyMultiFileList {
 public:
 	//! 'partition_indexes' are the partitions to read
@@ -123,6 +127,10 @@ private:
 	//! Add a listed file of the partition unless this list already has it (two partitions sharing a location: the
 	//! file belongs to the first). Called with HiveScanInfo::file_partitions_lock held.
 	void AddFile(OpenFileInfo file, idx_t partition_index) const;
+	//! The given files of the partitions (HiveScanInfo::explicit_files), attributed to their partitions
+	vector<OpenFileInfo> GivenFiles(const vector<idx_t> &partition_indexes) const;
+	idx_t GivenFileCount() const;
+	bool ExpandGivenFiles() const;
 
 private:
 	//! The context the list was created in; LazyMultiFileList keeps it as an optional_ptr that is const in const
@@ -141,6 +149,7 @@ private:
 	//! Registered partition location (without trailing '/') to its index in HiveScanInfo::Partitions()
 	mutable unordered_map<string, idx_t> partition_by_location;
 	mutable bool partition_locations_built = false;
+	mutable bool given_files_expanded = false;
 };
 
 //! Bind the reader for the file format (read_parquet, read_csv, read_json or read_avro) over the partitions of
