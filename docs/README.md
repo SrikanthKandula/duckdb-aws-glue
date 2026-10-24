@@ -404,12 +404,13 @@ GetTables on a database named `fault_*` with a Glue error; tests that need it ar
 ```sh
 make glue-fixture        # docker compose up (creates the bucket and the 'default' database)
 make test-local          # unittest --test-config test/configs/local_glue.json 'test/sql/*', with retries
+make test-cpp            # builds and runs unittest_glue, the C++ tests of test/unittest
 make glue-fixture-down
 
 AWS_PROFILE=... AWS_CONFIG_FILE=~/.aws/config AWS_SHARED_CREDENTIALS_FILE=~/.aws/credentials make test-cloud
 ```
 
-Both targets set `AWS_EC2_METADATA_DISABLED=true`: the test runner hides `~/.aws`, and without a region from the
+The test targets set `AWS_EC2_METADATA_DISABLED=true`: the test runner hides `~/.aws`, and without a region from the
 environment or a profile the AWS SDK asks the EC2 instance metadata service for one, which off EC2 hangs for
 minutes per client. A test config can not export process environment variables, so this stays on the command.
 
@@ -434,6 +435,13 @@ leaves behind after 2 days.
 
 Every test creates the tables it needs and writes under its own `{TEST_DIR}` prefix, so runs do not interfere with
 each other; `make glue-fixture-down` throws the containers and their data away.
+
+The C++ interface in `src/include/functions/hive_scan_call.hpp` is not reachable from SQL, so it is tested in C++:
+`test/unittest/` holds Catch tests in a binary of their own, `unittest_glue`, which links the extensions statically
+and which a normal build does not build. `make test-cpp` builds and runs it (`TEST_BUILD` as above). The tests that
+create Glue tables run only when `GLUE_ENDPOINT` points at localhost, which the target sets, so they need
+`make glue-fixture`; the others read local files. `test/sql/hive/hive_scan/hive_scan_arguments.test` pins the
+arguments of `hive_scan()`: adding one fails it, as a reminder to restate the new argument in `HiveScanGetCall`.
 
 The benchmarks under `benchmark/` read from the same local servers. They build their tables in the `load` step and
 use `debug_fs_delay_mean_ms` to add latency to every file open and read, standing in for the S3 round trip the local
