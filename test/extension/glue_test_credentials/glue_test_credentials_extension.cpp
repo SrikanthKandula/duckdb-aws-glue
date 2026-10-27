@@ -11,8 +11,8 @@
 #include "duckdb/function/table_function.hpp"
 #include "duckdb/main/client_context_state.hpp"
 #include "duckdb/main/extension/extension_loader.hpp"
-#include "duckdb/main/secret/file_credentials.hpp"
 #include "duckdb/main/secret/secret.hpp"
+#include "duckdb/main/secret/secret_manager.hpp"
 
 #include "api/glue_api.hpp"
 #include "api/glue_api_util.hpp"
@@ -29,22 +29,22 @@ namespace duckdb {
 
 namespace {
 
-//! The key id of the secret a table's credentials hold, unless it is given one
+//! The key id of the secret a table's file secret holds, unless it is given one
 static constexpr const char *CREDENTIALS_KEY_ID = "GLUE_TEST_CREDENTIALS";
 
 //! An open or a listing of a file under the recorded directory
 struct RecordedRead {
 	string path;
 	bool listing;
-	//! Whether it carried credentials
+	//! Whether it carried a file secret
 	bool has_credentials;
-	//! The key id of the secret its credentials gave it; empty when they gave none, or refused the path
+	//! The key id its file secret gave it; empty when it gave none, or refused the path
 	string key_id;
 };
 
 //! Serves the local files below 'root', as the local file system does, and records each open and listing with the
-//! credentials it carries. Like httpfs's S3 file system, it reads their secret for the path, which refuses a path
-//! outside their scope, and passes a listing's credentials to each file it lists.
+//! file secret it carries. Like httpfs's S3 file system, it reads the secret for the path, which refuses a path
+//! outside its scope, and passes a listing's file secret to each file it lists.
 class RecordingFileSystem : public LocalFileSystem {
 public:
 	explicit RecordingFileSystem(string root_p) : root(std::move(root_p)) {
@@ -72,34 +72,38 @@ protected:
 	}
 	unique_ptr<FileHandle> OpenFileExtended(const OpenFileInfo &file, FileOpenFlags flags,
 	                                        optional_ptr<FileOpener> opener) override {
-		Record(file.path, false, file.HasCredentials() ? file.extended_info->credentials : nullptr, opener);
+		Record(file.path, false, file.HasFileSecret() ? file.extended_info->file_secret : string(), opener);
 		return LocalFileSystem::OpenFile(file.path, flags, opener);
 	}
 	unique_ptr<MultiFileList> GlobFilesExtended(const string &path, const FileGlobInput &input,
 	                                            optional_ptr<FileOpener> opener) override {
-		Record(path, true, input.credentials, opener);
+		Record(path, true, input.file_secret, opener);
 		auto files = LocalFileSystem::GlobFilesExtended(path, input, opener)->GetAllFiles();
 		for (auto &file : files) {
-			file = file.WithCredentials(input.credentials);
+			file = file.WithFileSecret(input.file_secret);
 		}
 		return make_uniq<SimpleMultiFileList>(std::move(files));
 	}
 
 private:
-	void Record(const string &path, bool listing, const shared_ptr<FileCredentials> &credentials,
-	            optional_ptr<FileOpener> opener) {
-		// recorded before the secret is read, so that a read the credentials refuse is recorded
+	void Record(const string &path, bool listing, const string &file_secret, optional_ptr<FileOpener> opener) {
+		// recorded before the secret is read, so that a read the file secret refuses is recorded
 		idx_t index;
 		{
 			lock_guard<mutex> guard(lock);
 			index = reads.size();
-			reads.push_back(RecordedRead {path, listing, credentials != nullptr, string()});
+			reads.push_back(RecordedRead {path, listing, !file_secret.empty(), string()});
 		}
-		if (!credentials) {
+		if (file_secret.empty()) {
 			return;
 		}
+		if (!opener) {
+			throw InvalidConfigurationException("The file secret for '%s' cannot be used without a file opener", path);
+		}
+		FileOpenerInfo info {path, file_secret};
+		KeyValueSecretReader reader(*opener, &info, "s3");
 		Value key_id;
-		if (credentials->GetSecret(opener, path)->TryGetValue("key_id", key_id)) {
+		if (reader.TryGetSecretKey("key_id", key_id)) {
 			lock_guard<mutex> guard(lock);
 			reads[index].key_id = key_id.ToString();
 		}
@@ -110,14 +114,14 @@ private:
 	vector<RecordedRead> reads;
 };
 
-//! The credentials the scans of a table get: an S3 secret with key id `key_id` for the paths under `scope`
+//! The file secret the scans of a table get: an S3 secret with key id `key_id` for the paths under `scope`
 struct TableCredentials {
 	string scope;
 	string key_id;
 };
 
-//! The credentials a connection's transaction gave each table, so that the table's scans in it share them, as a
-//! callback that vends per transaction would
+//! The file secret a connection's transaction registered for each table, so that the table's scans in it share
+//! it, as the callback contract asks
 class TransactionCredentials : public ClientContextState {
 public:
 	void TransactionCommit(MetaTransaction &transaction, ClientContext &context) override {
@@ -127,7 +131,7 @@ public:
 		by_table.clear();
 	}
 
-	case_insensitive_map_t<shared_ptr<FileCredentials>> by_table;
+	case_insensitive_map_t<string> by_table;
 };
 
 //! The key of a table of an attached catalog
@@ -135,26 +139,25 @@ string TableKey(const string &catalog, const string &table) {
 	return catalog + "." + table;
 }
 
-//! Gives the scans of the tables named with PRAGMA glue_test_credentials their credentials
+//! Gives the scans of the tables named with PRAGMA glue_test_credentials their file secret
 class TestGlueFileCredentials : public GlueFileCredentialsCallback {
 public:
-	shared_ptr<FileCredentials> GetCredentials(ClientContext &context, const GlueTable &table,
-	                                           const GlueTableInfo &table_info) override {
+	string GetFileSecret(ClientContext &context, const GlueTable &table, const GlueTableInfo &table_info) override {
 		auto key = TableKey(table.catalog.GetName().GetIdentifierName(), table_info.name);
 		TableCredentials config;
 		{
 			lock_guard<mutex> guard(lock);
 			auto entry = tables.find(key);
 			if (entry == tables.end()) {
-				return nullptr;
+				return string();
 			}
 			config = entry->second;
 		}
 		auto state = context.registered_state->GetOrCreate<TransactionCredentials>("glue_test_credentials");
-		auto &credentials = state->by_table[key];
-		if (!credentials) {
+		auto &name = state->by_table[key];
+		if (name.empty()) {
 			auto key_id = config.key_id;
-			credentials = FileCredentials::Create(context, config.scope, [key_id](ClientContext &) {
+			name = SecretManager::Get(context).RegisterFileSecret(context, config.scope, [key_id](ClientContext &) {
 				auto secret = make_shared_ptr<KeyValueSecret>(vector<string>(), Identifier("s3"), Identifier("config"),
 				                                              Identifier());
 				secret->secret_map[Identifier("key_id")] = Value(key_id);
@@ -164,7 +167,7 @@ public:
 				return result;
 			});
 		}
-		return credentials;
+		return name;
 	}
 
 public:

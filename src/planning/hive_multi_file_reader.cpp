@@ -142,15 +142,15 @@ static bool CacheListings(ClientContext &context, const HiveScanInfo &scan_info)
 }
 
 //! The data files below 'location', at any depth (like read_parquet on a directory)
-static void ListDataFiles(ClientContext &context, bool cached, const string &location,
-                          const shared_ptr<FileCredentials> &credentials, vector<OpenFileInfo> &files) {
+static void ListDataFiles(ClientContext &context, bool cached, const string &location, const string &file_secret,
+                          vector<OpenFileInfo> &files) {
 	auto directory = location;
 	StringUtil::RTrim(directory, "/");
 	if (directory.empty()) {
 		return;
 	}
 	auto prefix = directory + "/";
-	auto listing = HiveQueryCache::Get(context)->GetDirectoryListing(context, directory, cached, credentials);
+	auto listing = HiveQueryCache::Get(context)->GetDirectoryListing(context, directory, cached, file_secret);
 	for (auto &file : listing->GetAllFiles()) {
 		if (!IsDataFile(file, prefix)) {
 			continue;
@@ -276,7 +276,7 @@ void HiveMultiFileList::ListPartition(idx_t partition_index) const {
 	auto location = partition.location;
 	StringUtil::RTrim(location, "/");
 	vector<OpenFileInfo> partition_files;
-	ListDataFiles(client_context, CacheListings(client_context, *scan_info), location, scan_info->credentials,
+	ListDataFiles(client_context, CacheListings(client_context, *scan_info), location, scan_info->file_secret,
 	              partition_files);
 	BuildPartitionLocations();
 	lock_guard<mutex> guard(scan_info->file_partitions_lock);
@@ -310,7 +310,7 @@ void HiveMultiFileList::ListRoot(const vector<idx_t> &partitions) const {
 	// from the pages the sample fetched
 	auto files = HiveQueryCache::Get(client_context)
 	                 ->GetDirectoryListing(client_context, root, CacheListings(client_context, *scan_info),
-	                                       scan_info->credentials)
+	                                       scan_info->file_secret)
 	                 ->GetAllFiles();
 	unordered_set<idx_t> reading;
 	auto all = scan_info->Partitions(client_context);
@@ -351,7 +351,7 @@ bool HiveMultiFileList::ExpandNextPath() const {
 			throw InvalidInputException("Hive table '%s' has no location", scan_info->Describe());
 		}
 		ListDataFiles(client_context, CacheListings(client_context, *scan_info), scan_info->root_location,
-		              scan_info->credentials, expanded_files);
+		              scan_info->file_secret, expanded_files);
 		return true;
 	}
 	if (job.root) {
@@ -407,7 +407,7 @@ vector<OpenFileInfo> HiveMultiFileList::ListSampleDirectory() const {
 	vector<OpenFileInfo> files;
 	if (scan_info->partition_keys.empty()) {
 		ListDataFiles(client_context, CacheListings(client_context, *scan_info), scan_info->root_location,
-		              scan_info->credentials, files);
+		              scan_info->file_secret, files);
 		return files;
 	}
 	if (listing_jobs.empty()) {
@@ -420,7 +420,7 @@ vector<OpenFileInfo> HiveMultiFileList::ListSampleDirectory() const {
 	auto location = (*scan_info->Partitions(client_context))[partition_index].location;
 	StringUtil::RTrim(location, "/");
 	vector<OpenFileInfo> listed;
-	ListDataFiles(client_context, CacheListings(client_context, *scan_info), location, scan_info->credentials, listed);
+	ListDataFiles(client_context, CacheListings(client_context, *scan_info), location, scan_info->file_secret, listed);
 	// as ListPartition keeps them: not the files of a partition registered at a location nested inside this one
 	BuildPartitionLocations();
 	lock_guard<mutex> guard(scan_info->file_partitions_lock);
@@ -441,7 +441,7 @@ vector<OpenFileInfo> HiveMultiFileList::SampleRootPartitions(const vector<idx_t>
 	auto root_prefix = root + "/";
 	auto listing = HiveQueryCache::Get(client_context)
 	                   ->GetDirectoryListing(client_context, root, CacheListings(client_context, *scan_info),
-	                                         scan_info->credentials);
+	                                         scan_info->file_secret);
 	unordered_set<idx_t> reading(partitions.begin(), partitions.end());
 	BuildPartitionLocations();
 	optional_idx sampled;
@@ -570,9 +570,9 @@ static void HiveScanSerialize(Serializer &serializer, const optional_ptr<Functio
 	auto &bind_data = bind_data_p->Cast<MultiFileBindData>();
 	auto &list = bind_data.file_list->Cast<HiveMultiFileList>();
 	auto &info = list.ScanInfo();
-	if (info.credentials) {
-		// Credentials are not written as bytes SQL could supply, so a scan bound again from what is written would read
-		// by path. Throwing makes the optimizers that compare or copy plans through serialization leave the scan alone.
+	if (!info.file_secret.empty()) {
+		// A file secret's name is not written, so a scan bound again from what is written would read by path.
+		// Throwing makes the optimizers that compare or copy plans through serialization leave the scan alone.
 		throw NotImplementedException("The Hive scan of '%s' cannot be serialized: it has file credentials",
 		                              info.Describe());
 	}
